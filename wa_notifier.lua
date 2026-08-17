@@ -4,7 +4,7 @@ local TextChatService = game:GetService("TextChatService")
 local Players = game:GetService("Players")
 
 -- ============================================================
--- ⚙️ CONFIG WEBHOOK
+-- ⚙️ CONFIG WEBHOOK (SISTEM USERNAME AUTOMATIC)
 -- ============================================================
 local BOT_WEBHOOK_URL = "https://private.gervhosting.my.id/roblox/fish-caught"
 -- ============================================================
@@ -22,7 +22,7 @@ local function sendToWA(playerName, fishName, rarity, weight, mutation, chance, 
         luckEnds = "Active"
     }
 
-    local reqFunc = (syn and syn.request) or (http and http.request) or http_request or fluxus.request or request
+    local reqFunc = (syn and syn.request) or (http and http.request) or http_request or (fluxus and fluxus.request) or request
     if reqFunc then
         reqFunc({
             Url = BOT_WEBHOOK_URL,
@@ -69,4 +69,4 @@ task.spawn(function()
     end
 end)
 
-print("✅ [WA-Notifier] Webhook FishIt 1 Server Berhasil Aktif!")
+print("✅ [WA-Notifier] Webhook FishIt System Username Berhasil Aktif!")
