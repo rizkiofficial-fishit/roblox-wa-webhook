@@ -8,7 +8,7 @@ local BOT_WEBHOOK_URL = "https://private.gervhosting.my.id/roblox/fish-caught"
 local LocalPlayer = Players.LocalPlayer
 
 -- ==========================================
--- NOTIFICATION SYSTEM
+-- POP-UP NOTIFICATION
 -- ==========================================
 local function notify(title, text, duration)
     pcall(function()
@@ -52,14 +52,15 @@ local function sendToWA(playerName, fishName, rarity, weight, mutation, chance, 
     local payload = HttpService:JSONEncode(data)
 
     print("====================================")
-    print("[FishIt WA] Mengirim webhook...")
+    print("[FishIt WA] Mengirim data ke webhook...")
     print("[FishIt WA] Player :", data.player)
     print("[FishIt WA] Fish   :", data.fishName)
     print("[FishIt WA] Rarity :", data.rarity)
 
     local reqFunc = getRequestFunction()
+    local success = false
 
-    -- Metoda 1: Memakai Executor Request Function
+    -- Method 1: Executor Request
     if reqFunc then
         local ok, response = pcall(function()
             return reqFunc({
@@ -75,38 +76,40 @@ local function sendToWA(playerName, fishName, rarity, weight, mutation, chance, 
 
         if ok and response then
             local statusCode = (type(response) == "table" and (response.StatusCode or response.Status)) or 200
-            print("[FishIt WA] ✅ Status:", statusCode)
-            notify("FishIt WA ✅", "Data berhasil dikirim!", 4)
-            return true
+            if statusCode >= 200 and statusCode < 300 then
+                print("[FishIt WA] ✅ Status:", statusCode)
+                notify("FishIt WA ✅", "Data terkirim ke WhatsApp!", 4)
+                success = true
+            end
         end
     end
 
-    -- Metoda 2 (Fallback): Memakai Game HttpPostAsync jika Executor Request gagal
-    local okAsync = pcall(function()
-        game:HttpPostAsync(BOT_WEBHOOK_URL, payload, "application/json")
-    end)
+    -- Method 2: Game HttpPostAsync (Fallback jika Executor Request gagal / terblokir)
+    if not success then
+        local okAsync = pcall(function()
+            game:HttpPostAsync(BOT_WEBHOOK_URL, payload, "application/json")
+        end)
 
-    if okAsync then
-        print("[FishIt WA] ✅ Webhook terkirim via HttpPostAsync!")
-        notify("FishIt WA ✅", "Data terkirim via HttpPost!", 4)
-        return true
-    else
-        warn("[FishIt WA] ❌ Webhook Gagal Dikirim!")
-        notify("FishIt WA ❌", "Gagal mengirim webhook", 5)
-        return false
+        if okAsync then
+            print("[FishIt WA] ✅ Terkirim via HttpPostAsync!")
+            notify("FishIt WA ✅", "Data terkirim via HttpPost!", 4)
+        else
+            warn("[FishIt WA] ❌ Gagal mengirim data webhook.")
+            notify("FishIt WA ❌", "Webhook gagal terkirim", 5)
+        end
     end
 end
 
 -- ==========================================
--- TEST WEBHOOK (AUTO TEST 3 DETIK)
+-- AUTO TEST (3 DETIK SETELAH EXECUTE)
 -- ==========================================
 task.delay(3, function()
-    print("[FishIt WA] Mengirim TEST webhook...")
+    print("[FishIt WA] Menguji pengiriman webhook...")
     sendToWA(LocalPlayer.Name, "TEST FISH", "Legendary", "10", "None", "1 in 100", "")
 end)
 
 -- ==========================================
--- REMOTE EVENT DETECTION (UNIVERSAL)
+-- REMOTE EVENT DETECTION
 -- ==========================================
 for _, v in pairs(game:GetDescendants()) do
     if v:IsA("RemoteEvent") then
@@ -128,7 +131,7 @@ for _, v in pairs(game:GetDescendants()) do
 end
 
 -- ==========================================
--- CHAT BROADCAST DETECTION (OLD & NEW CHAT)
+-- CHAT BROADCAST DETECTION
 -- ==========================================
 local function processChatMessage(text, sender)
     local lowerText = string.lower(text or "")
@@ -139,7 +142,7 @@ local function processChatMessage(text, sender)
     end
 end
 
--- Chat System Lama
+-- System Chat Lama
 local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
 if chatEvents then
     local onMessage = chatEvents:FindFirstChild("OnMessageDoneFiltering")
@@ -152,7 +155,7 @@ if chatEvents then
     end
 end
 
--- Chat System Baru (TextChatService)
+-- System Chat Baru (TextChatService)
 if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
     TextChatService.MessageReceived:Connect(function(msg)
         local senderName = msg.TextSource and msg.TextSource.Name or LocalPlayer.Name
@@ -162,5 +165,4 @@ end
 
 print("====================================")
 print("✅ [FishIt WA] SYSTEM READY")
-print("🎣 Menunggu fish...")
 print("====================================")
