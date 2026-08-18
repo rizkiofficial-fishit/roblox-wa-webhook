@@ -60,7 +60,7 @@ local function sendToWA(playerName, fishName, rarity, weight, mutation, chance, 
     local reqFunc = getRequestFunction()
     local success = false
 
-    -- Method 1: Executor Request
+    -- Method 1: Executor Request Standard
     if reqFunc then
         local ok, response = pcall(function()
             return reqFunc({
@@ -109,7 +109,7 @@ task.delay(3, function()
 end)
 
 -- ==========================================
--- REMOTE EVENT DETECTION
+-- REMOTE EVENT DETECTION (DETEKSI DAPAT IKAN)
 -- ==========================================
 for _, v in pairs(game:GetDescendants()) do
     if v:IsA("RemoteEvent") then
@@ -131,7 +131,7 @@ for _, v in pairs(game:GetDescendants()) do
 end
 
 -- ==========================================
--- CHAT BROADCAST DETECTION
+-- CHAT BROADCAST DETECTION (OLD & NEW CHAT)
 -- ==========================================
 local function processChatMessage(text, sender)
     local lowerText = string.lower(text or "")
@@ -144,7 +144,7 @@ end
 
 -- System Chat Lama
 local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-if chatEvents then
+if chatEvents me then
     local onMessage = chatEvents:FindFirstChild("OnMessageDoneFiltering")
     if onMessage then
         onMessage.OnClientEvent:Connect(function(data)
