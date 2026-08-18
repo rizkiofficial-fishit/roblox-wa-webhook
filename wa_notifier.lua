@@ -84,7 +84,7 @@ local function sendToWA(playerName, fishName, rarity, weight, mutation, chance, 
         end
     end
 
-    -- Method 2: Game HttpPostAsync (Fallback jika Executor Request gagal / terblokir)
+    -- Method 2: Game HttpPostAsync (Fallback)
     if not success then
         local okAsync = pcall(function()
             game:HttpPostAsync(BOT_WEBHOOK_URL, payload, "application/json")
@@ -109,7 +109,7 @@ task.delay(3, function()
 end)
 
 -- ==========================================
--- REMOTE EVENT DETECTION (DETEKSI DAPAT IKAN)
+-- REMOTE EVENT DETECTION
 -- ==========================================
 for _, v in pairs(game:GetDescendants()) do
     if v:IsA("RemoteEvent") then
@@ -131,7 +131,7 @@ for _, v in pairs(game:GetDescendants()) do
 end
 
 -- ==========================================
--- CHAT BROADCAST DETECTION (OLD & NEW CHAT)
+-- CHAT BROADCAST DETECTION
 -- ==========================================
 local function processChatMessage(text, sender)
     local lowerText = string.lower(text or "")
@@ -144,7 +144,7 @@ end
 
 -- System Chat Lama
 local chatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-if chatEvents me then
+if chatEvents then
     local onMessage = chatEvents:FindFirstChild("OnMessageDoneFiltering")
     if onMessage then
         onMessage.OnClientEvent:Connect(function(data)
@@ -156,12 +156,14 @@ if chatEvents me then
 end
 
 -- System Chat Baru (TextChatService)
-if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
-    TextChatService.MessageReceived:Connect(function(msg)
-        local senderName = msg.TextSource and msg.TextSource.Name or LocalPlayer.Name
-        processChatMessage(msg.Text, senderName)
-    end)
-end
+pcall(function()
+    if TextChatService.ChatVersion == Enum.ChatVersion.TextChatService then
+        TextChatService.MessageReceived:Connect(function(msg)
+            local senderName = msg.TextSource and msg.TextSource.Name or LocalPlayer.Name
+            processChatMessage(msg.Text, senderName)
+        end)
+    end
+end)
 
 print("====================================")
 print("✅ [FishIt WA] SYSTEM READY")
