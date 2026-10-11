@@ -105,8 +105,45 @@ local function getIsland(pos)
     return string.format("Dekat %s (%d stud)", nearName, math.floor(nearDist))
 end
 
+-- Game nyimpen rod yang lagi dipegang di model "!!!EQUIPPED_TOOL!!!" di dalam character
+local function rodFromEquippedModel(char)
+    local m = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
+    if not m then return nil end
+
+    -- a) attribute string yang namanya mirip nama item
+    for k, v in pairs(m:GetAttributes()) do
+        local key = string.lower(k)
+        if type(v) == "string" and v ~= ""
+            and (string.find(key, "name") or string.find(key, "rod")
+                or string.find(key, "item") or string.find(key, "tool")) then
+            return v
+        end
+    end
+
+    -- b) StringValue di dalamnya
+    for _, d in ipairs(m:GetDescendants()) do
+        if d:IsA("StringValue") and d.Value ~= "" then
+            return d.Value
+        end
+    end
+
+    -- c) nama model/folder anak langsung (selain nama generik)
+    local generic = { handle = true, tool = true, model = true, rod = true, mesh = true }
+    for _, c in ipairs(m:GetChildren()) do
+        if (c:IsA("Model") or c:IsA("Folder") or c:IsA("Tool") or c:IsA("Accessory"))
+            and not generic[string.lower(c.Name)] then
+            return c.Name
+        end
+    end
+
+    return nil
+end
+
 local function getRod(player)
     local char = player.Character
+
+    local fromModel = rodFromEquippedModel(char)
+    if fromModel then return fromModel end
 
     -- 1) Tool yang lagi dipegang (paling umum)
     if char then
@@ -165,8 +202,19 @@ local function scan()
     for _, plr in ipairs(Players:GetPlayers()) do
         local char = plr.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local island = hrp and titleCase(getIsland(hrp.Position)) or "(belum spawn)"
+        -- Game sendiri nyimpen lokasi player di attribute "LocationName"
+        local loc = plr:GetAttribute("LocationName")
+        local island
+        if type(loc) == "string" and loc ~= "" then
+            island = titleCase(loc)
+        elseif hrp then
+            island = titleCase(getIsland(hrp.Position))
+        else
+            island = "(belum spawn)"
+        end
+
         table.insert(rows, {
+            fishing = plr:GetAttribute("FLAG_Fishing") == true,
             display = plr.DisplayName,
             name = plr.DisplayName .. " (@" .. plr.Name .. ")",
             island = island,
@@ -324,6 +372,20 @@ dbgBtn.MouseButton1Click:Connect(function()
         for _, c in ipairs(char:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
         add("-- Character attributes:")
         for k, v in pairs(char:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
+        local eqTool = char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
+        if eqTool then
+            add("-- !!!EQUIPPED_TOOL!!! attributes:")
+            for k, v in pairs(eqTool:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
+            add("-- !!!EQUIPPED_TOOL!!! descendants:")
+            local n = 0
+            for _, d in ipairs(eqTool:GetDescendants()) do
+                n = n + 1
+                if n > 80 then add("  ...") break end
+                local extra = ""
+                if d:IsA("ValueBase") then extra = " = " .. tostring(d.Value) end
+                add("  " .. d.ClassName .. " | " .. d.Name .. extra)
+            end
+        end
         add("-- Descendants character yang namanya mengandung 'rod':")
         for _, d in ipairs(char:GetDescendants()) do
             if string.find(string.lower(d.Name), "rod") then
@@ -418,7 +480,7 @@ local function render()
         l.TextColor3 = Color3.new(1, 1, 1)
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextYAlignment = Enum.TextYAlignment.Center
-        l.Text = "  " .. r.name .. "\n  Pulau: " .. r.island .. "  |  Rod: " .. r.rod
+        l.Text = "  " .. (r.fishing and "🟢 " or "⚪ ") .. r.name .. "\n  Pulau: " .. r.island .. "  |  Rod: " .. r.rod
         l.Parent = list
         Instance.new("UICorner", l).CornerRadius = UDim.new(0, 6)
     end
@@ -462,19 +524,22 @@ local function buildReport()
     end)
 
     local blocks = {}
+    local fishingCount = 0
     for _, island in ipairs(order) do
         local members = groups[island]
         local lines = { string.format("🏝️ **%s** · %d player", island, #members) }
         for _, m in ipairs(members) do
             local rod = (m.rod ~= "-") and m.rod or "–"
-            lines[#lines + 1] = string.format("> 👤 %s  ·  🎣 %s", m.display, rod)
+            local mark = m.fishing and "🟢" or "⚪"
+            lines[#lines + 1] = string.format("> %s %s  ·  🎣 %s", mark, m.display, rod)
+            if m.fishing then fishingCount = fishingCount + 1 end
         end
         blocks[#blocks + 1] = table.concat(lines, "\n")
     end
 
     local text = table.concat(blocks, "\n\n")
     if #text > 3800 then text = string.sub(text, 1, 3800) .. "\n..." end
-    return #rows, #order, text
+    return #rows, #order, text, fishingCount
 end
 
 local function sendWebhook()
@@ -487,14 +552,15 @@ local function sendWebhook()
         return
     end
 
-    local count, islandCount, text = buildReport()
+    local count, islandCount, text, fishingCount = buildReport()
     local payload = {
         username = BOT_NAME,
         content = "📍 **Update posisi pemancing** (" .. count .. " player di server)",
         embeds = {{
             title = "🎣 Fish It — Peta Pemancing",
-            description = string.format("👥 **%d** player  ·  🏝️ **%d** lokasi aktif\n\n%s",
-                count, islandCount, text),
+            description = string.format(
+                "👥 **%d** player  ·  🎣 **%d** mancing  ·  🏝️ **%d** lokasi\n🟢 lagi mancing   ⚪ tidak\n\n%s",
+                count, fishingCount, islandCount, text),
             color = 3447003,
             footer = { text = "Server " .. string.sub(game.JobId, 1, 8)
                 .. "  •  update tiap " .. math.floor(NOTIFY_INTERVAL / 60) .. " menit" },
