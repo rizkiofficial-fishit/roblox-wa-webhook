@@ -180,7 +180,12 @@ local function buildTemplates()
         }
         end
     end
-    templates = out
+    -- pakai cuma folder "Fishing Rods" kalau ada (hindari NPC/cutscene yang mirip)
+    local rodOnly = {}
+    for _, t in ipairs(out) do
+        if string.find(t.path, "Fishing Rods", 1, true) then rodOnly[#rodOnly + 1] = t end
+    end
+    templates = (#rodOnly > 0) and rodOnly or out
 end
 
 task.spawn(function() pcall(buildTemplates) end)
@@ -293,6 +298,12 @@ end
 local function getRod(player)
     local char = player.Character
 
+    -- skin rod disimpan game di attribute player
+    local skin = player:GetAttribute("FishingRodSkin")
+    if type(skin) == "string" and skin ~= "" then
+        return skin .. " (skin)"
+    end
+
     local fromModel = rodFromEquippedModel(char)
     if fromModel then return fromModel end
 
@@ -351,6 +362,7 @@ local lastFishing = {}
 local function isFishing(plr)
     local now = os.clock()
     local sig = plr:GetAttribute("FLAG_Fishing") == true
+        or plr:GetAttribute("PetFishingActive") == true
         or plr:GetAttribute("EquippedPetState") == "Fishing"
     if sig then lastFishing[plr] = now end
     local t = lastFishing[plr]
