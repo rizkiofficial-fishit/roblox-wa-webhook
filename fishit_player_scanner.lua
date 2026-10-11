@@ -31,7 +31,31 @@ local BOT_NAME        = "Fish It Scanner"
 -- GANTI sesuai koordinat asli di game
 -- Kosongin aja, pulau bisa ditambah langsung dari panel (tombol "Simpan lokasi")
 local ISLANDS = {
-    -- { "Kohana", Vector3.new(120, 15, -340), 150 },
+    { "kohana",                Vector3.new(-644, 16, 627),     250 },
+    { "kohana vulcano",        Vector3.new(-512, 18, 155),     250 },
+    { "fisherman island",      Vector3.new(33, 9, 2816),       250 },
+    { "coral reefs",           Vector3.new(-2795, 9, 2094),    250 },
+    { "esoteric grove",        Vector3.new(2329, -1151, 1408), 250 },
+    { "esoteric depths",       Vector3.new(3195, -1303, 1457), 250 },
+    { "tropical grove",        Vector3.new(-2040, 6, 3666),    250 },
+    { "crater island",         Vector3.new(974, 7, 4892),      250 },
+    { "sisyphus statue",       Vector3.new(-3694, -136, -1040),250 },
+    { "treasure room",         Vector3.new(-3601, -267, -1558),250 },
+    { "planetary observatory", Vector3.new(385, 3, 2147),      250 },
+    { "lava basin",            Vector3.new(1022, 85, -10244),  250 },
+    { "ancient jungle",        Vector3.new(1313, 7, -178),     250 },
+    { "sacred temple",         Vector3.new(1485, 7, -546),     250 },
+    { "stingray shores",       Vector3.new(-2132, 5, -586),    250 },
+    { "copper canyon",         Vector3.new(-4098, 4, 644),     250 },
+    { "copper canyon mines",   Vector3.new(-4167, -555, 534),  250 },
+    { "underwater city",       Vector3.new(-3184, -637, -10233),400 },
+    { "sewers",                Vector3.new(-1417, -1042, -10412),250 },
+    { "ancient ruin",          Vector3.new(6050, -554, 4444),  250 },
+    { "pirate cove",           Vector3.new(3330, 4, 3540),     250 },
+    { "crystal depths",        Vector3.new(5670, -903, 15418), 250 },
+    { "gloomcamp depths",      Vector3.new(5856, -880, 12246), 250 },
+    { "elemental island",      Vector3.new(-665, 4, 5155),     250 },
+    { "thorne room",           Vector3.new(-1236, -854, 5502), 250 },
 }
 
 -- Tempat lain yang mungkin nyimpen nama rod (dicek berurutan)
@@ -50,6 +74,11 @@ if type(cfg.ISLANDS) == "table" then ISLANDS = cfg.ISLANDS end
 ------------------------------------------------------------
 -- LOGIKA
 ------------------------------------------------------------
+-- "kohana vulcano" -> "Kohana Vulcano"
+local function titleCase(s)
+    return (string.gsub(s, "(%a)([%w']*)", function(a, b) return string.upper(a) .. b end))
+end
+
 local function getIsland(pos)
     if #ISLANDS == 0 then
         return string.format("(%d, %d, %d)", math.floor(pos.X), math.floor(pos.Y), math.floor(pos.Z))
@@ -91,6 +120,25 @@ local function getRod(player)
         if fallbackTool then return fallbackTool end
     end
 
+    -- 1b) Model/aksesori rod yang nempel di character (nama mengandung "rod")
+    if char then
+        for _, d in ipairs(char:GetDescendants()) do
+            if (d:IsA("Model") or d:IsA("Accessory") or d:IsA("Folder") or d:IsA("Tool"))
+                and string.find(string.lower(d.Name), "rod") then
+                return d.Name
+            end
+        end
+    end
+
+    -- 1c) Attribute apa pun yang namanya mengandung "rod"
+    for _, holder in ipairs({ player, char }) do
+        if holder then
+            for k, v in pairs(holder:GetAttributes()) do
+                if string.find(string.lower(k), "rod") then return tostring(v) end
+            end
+        end
+    end
+
     -- 2) Attribute di player / character
     for _, attr in ipairs(ROD_ATTRIBUTE_NAMES) do
         local v = player:GetAttribute(attr) or (char and char:GetAttribute(attr))
@@ -113,8 +161,9 @@ local function scan()
     for _, plr in ipairs(Players:GetPlayers()) do
         local char = plr.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        local island = hrp and getIsland(hrp.Position) or "(belum spawn)"
+        local island = hrp and titleCase(getIsland(hrp.Position)) or "(belum spawn)"
         table.insert(rows, {
+            display = plr.DisplayName,
             name = plr.DisplayName .. " (@" .. plr.Name .. ")",
             island = island,
             rod = getRod(plr),
@@ -229,9 +278,9 @@ saveBtn.MouseButton1Click:Connect(function()
     if nm == "" or not hrp then return end
 
     local p = hrp.Position
-    table.insert(ISLANDS, { nm, p, 150 })
+    table.insert(ISLANDS, { nm, p, 250 })
 
-    local line = string.format('    { "%s", Vector3.new(%d, %d, %d), 150 },',
+    local line = string.format('    { "%s", Vector3.new(%d, %d, %d), 250 },',
         nm, math.floor(p.X), math.floor(p.Y), math.floor(p.Z))
     print("[FishItScanner] " .. line)
     pcall(function() if setclipboard then setclipboard(line) end end)
@@ -239,6 +288,57 @@ saveBtn.MouseButton1Click:Connect(function()
     nameBox.Text = ""
     saveBtn.Text = "Tersimpan!"
     task.delay(1.5, function() saveBtn.Text = "Simpan lokasi" end)
+end)
+
+-- Tombol debug "?" : dump info buat nyari tempat game nyimpen data rod
+local dbgBtn = Instance.new("TextButton")
+dbgBtn.Size = UDim2.new(0, 24, 0, 24)
+dbgBtn.Position = UDim2.new(1, -60, 0, 5)
+dbgBtn.BackgroundColor3 = Color3.fromRGB(70, 90, 160)
+dbgBtn.Text = "?"
+dbgBtn.TextColor3 = Color3.new(1, 1, 1)
+dbgBtn.Font = Enum.Font.GothamBold
+dbgBtn.TextSize = 12
+dbgBtn.Parent = frame
+Instance.new("UICorner", dbgBtn).CornerRadius = UDim.new(0, 6)
+
+dbgBtn.MouseButton1Click:Connect(function()
+    local out = {}
+    local function add(s) out[#out + 1] = s end
+    local plr = LocalPlayer
+    local char = plr.Character
+
+    add("===== FISHITSCANNER DEBUG ROD =====")
+    add("-- Player children:")
+    for _, c in ipairs(plr:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
+    add("-- Player attributes:")
+    for k, v in pairs(plr:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
+
+    if char then
+        add("-- Character children:")
+        for _, c in ipairs(char:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
+        add("-- Character attributes:")
+        for k, v in pairs(char:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
+        add("-- Descendants character yang namanya mengandung 'rod':")
+        for _, d in ipairs(char:GetDescendants()) do
+            if string.find(string.lower(d.Name), "rod") then
+                add("  " .. d.ClassName .. " | " .. d:GetFullName())
+            end
+        end
+    end
+
+    local bp = plr:FindFirstChildOfClass("Backpack")
+    if bp then
+        add("-- Backpack:")
+        for _, c in ipairs(bp:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
+    end
+    add("===== END =====")
+
+    local text = table.concat(out, "\n")
+    print(text)
+    pcall(function() if setclipboard then setclipboard(text) end end)
+    dbgBtn.Text = "OK"
+    task.delay(1.5, function() dbgBtn.Text = "?" end)
 end)
 
 local running = true
@@ -299,14 +399,37 @@ local httpRequest = (syn and syn.request)
 
 local function buildReport()
     local rows = scan()
-    local lines = {}
-    for i, r in ipairs(rows) do
-        lines[#lines + 1] = string.format("%d. **%s**\n   Pulau: %s\n   Rod: %s",
-            i, r.name, r.island, r.rod)
+
+    -- kelompokkan player per pulau
+    local groups, order = {}, {}
+    for _, r in ipairs(rows) do
+        if not groups[r.island] then
+            groups[r.island] = {}
+            order[#order + 1] = r.island
+        end
+        table.insert(groups[r.island], r)
     end
-    local text = table.concat(lines, "\n\n")
+
+    -- pulau paling rame di atas
+    table.sort(order, function(a, b)
+        if #groups[a] ~= #groups[b] then return #groups[a] > #groups[b] end
+        return a < b
+    end)
+
+    local blocks = {}
+    for _, island in ipairs(order) do
+        local members = groups[island]
+        local lines = { string.format("🏝️ **%s** · %d player", island, #members) }
+        for _, m in ipairs(members) do
+            local rod = (m.rod ~= "-") and m.rod or "–"
+            lines[#lines + 1] = string.format("> 👤 %s  ·  🎣 %s", m.display, rod)
+        end
+        blocks[#blocks + 1] = table.concat(lines, "\n")
+    end
+
+    local text = table.concat(blocks, "\n\n")
     if #text > 3800 then text = string.sub(text, 1, 3800) .. "\n..." end
-    return #rows, text
+    return #rows, #order, text
 end
 
 local function sendWebhook()
@@ -319,15 +442,18 @@ local function sendWebhook()
         return
     end
 
-    local count, text = buildReport()
+    local count, islandCount, text = buildReport()
     local payload = {
         username = BOT_NAME,
-        content = "📍 **Update posisi player** (" .. count .. " player di server)",
+        content = "📍 **Update posisi pemancing** (" .. count .. " player di server)",
         embeds = {{
-            title = "Fish It - Lokasi & Rod Player",
-            description = text,
+            title = "🎣 Fish It — Peta Pemancing",
+            description = string.format("👥 **%d** player  ·  🏝️ **%d** lokasi aktif\n\n%s",
+                count, islandCount, text),
             color = 3447003,
-            footer = { text = "Server: " .. string.sub(game.JobId, 1, 8) .. " | " .. os.date("%H:%M:%S") },
+            footer = { text = "Server " .. string.sub(game.JobId, 1, 8)
+                .. "  •  update tiap " .. math.floor(NOTIFY_INTERVAL / 60) .. " menit" },
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         }},
     }
 
