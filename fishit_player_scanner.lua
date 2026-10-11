@@ -37,6 +37,16 @@ local ISLANDS = {
 -- Tempat lain yang mungkin nyimpen nama rod (dicek berurutan)
 local ROD_ATTRIBUTE_NAMES = { "EquippedRod", "Rod", "FishingRod", "CurrentRod" }
 
+-- Override config dari luar (dipakai kalau script dijalankan via loadstring).
+-- Jadi URL webhook & daftar pulau cukup ditulis di executor, ga perlu masuk file GitHub.
+local cfg = (getgenv and getgenv().FishItConfig) or {}
+if cfg.WEBHOOK_URL then WEBHOOK_URL = cfg.WEBHOOK_URL end
+if cfg.NOTIFY_INTERVAL then NOTIFY_INTERVAL = cfg.NOTIFY_INTERVAL end
+if cfg.UPDATE_INTERVAL then UPDATE_INTERVAL = cfg.UPDATE_INTERVAL end
+if cfg.SEND_ON_START ~= nil then SEND_ON_START = cfg.SEND_ON_START end
+if cfg.BOT_NAME then BOT_NAME = cfg.BOT_NAME end
+if type(cfg.ISLANDS) == "table" then ISLANDS = cfg.ISLANDS end
+
 ------------------------------------------------------------
 -- LOGIKA
 ------------------------------------------------------------
