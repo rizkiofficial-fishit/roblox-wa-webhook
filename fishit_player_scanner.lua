@@ -59,6 +59,11 @@ local ISLANDS = {
     { "thorne room",           Vector3.new(-1236, -854, 5502), 250 },
 }
 
+-- Model rod yang dipakai SEMUA player non-skin (ga bisa bedain rod aslinya dari client).
+-- Hasil match ke nama-nama ini ditampilin sebagai GENERIC_LABEL.
+local GENERIC_RODS = {} -- kosong = semua nama rod tampil apa adanya
+local GENERIC_LABEL = "Rod biasa (non-skin)"
+
 local ROD_ATTRIBUTE_NAMES = { "EquippedRod", "Rod", "FishingRod", "CurrentRod" }
 
 local cfg = (getgenv and getgenv().FishItConfig) or {}
@@ -68,6 +73,11 @@ if cfg.UPDATE_INTERVAL then UPDATE_INTERVAL = cfg.UPDATE_INTERVAL end
 if cfg.SEND_ON_START ~= nil then SEND_ON_START = cfg.SEND_ON_START end
 if cfg.BOT_NAME then BOT_NAME = cfg.BOT_NAME end
 if type(cfg.ISLANDS) == "table" then ISLANDS = cfg.ISLANDS end
+if type(cfg.GENERIC_RODS) == "table" then
+    GENERIC_RODS = {}
+    for _, n in ipairs(cfg.GENERIC_RODS) do GENERIC_RODS[n] = true end
+end
+if cfg.GENERIC_LABEL then GENERIC_LABEL = cfg.GENERIC_LABEL end
 
 ------------------------------------------------------------
 -- LOGIKA
@@ -306,7 +316,10 @@ local function getRod(player)
     end
 
     local fromModel = rodFromEquippedModel(char)
-    if fromModel then return fromModel end
+    if fromModel then
+        if GENERIC_RODS[fromModel] then return GENERIC_LABEL end
+        return fromModel
+    end
 
     if char then
         local fallbackTool
