@@ -177,15 +177,13 @@ local function buildTemplates()
             set = g.set,
             n = g.n,
             rodish = (string.find(string.lower(r:GetFullName()), "rod") ~= nil),
+            fr = (string.find(r:GetFullName(), "Fishing Rods", 1, true) ~= nil),
+            bad = (string.find(r:GetFullName(), ".NPC.", 1, true) ~= nil
+                or string.find(r:GetFullName(), "Cutscene", 1, true) ~= nil),
         }
         end
     end
-    -- pakai cuma folder "Fishing Rods" kalau ada (hindari NPC/cutscene yang mirip)
-    local rodOnly = {}
-    for _, t in ipairs(out) do
-        if string.find(t.path, "Fishing Rods", 1, true) then rodOnly[#rodOnly + 1] = t end
-    end
-    templates = (#rodOnly > 0) and rodOnly or out
+    templates = out
 end
 
 task.spawn(function() pcall(buildTemplates) end)
@@ -232,7 +230,8 @@ local function candidates(model, k)
         for _, t in ipairs(list) do
             local cov, jac, common = scoreOf(set, n, t)
             if cov >= 0.5 then
-                local s = jac + (t.rodish and 0.05 or 0) + (isLearned and 1 or 0)
+                local s = jac + (t.rodish and 0.05 or 0) + (t.fr and 0.1 or 0)
+                    - (t.bad and 0.3 or 0) + (isLearned and 1 or 0)
                 res[#res + 1] = { name = t.name, path = t.path, cov = cov, jac = jac, score = s, common = common }
             end
         end
@@ -287,7 +286,7 @@ local function rodFromEquippedModel(char)
     local generic = { handle = true, tool = true, model = true, rod = true, mesh = true }
     for _, c in ipairs(m:GetChildren()) do
         if (c:IsA("Model") or c:IsA("Folder") or c:IsA("Tool") or c:IsA("Accessory"))
-            and not generic[string.lower(c.Name)] then
+            and #c.Name > 2 and not generic[string.lower(c.Name)] then
             return c.Name
         end
     end
@@ -612,6 +611,21 @@ dbgBtn.MouseButton1Click:Connect(function()
             if c:FindFirstChild("!!!EQUIPPED_TOOL!!!") then extra = extra .. " TOOL" end
         end
         add("  " .. plr.Name .. " | " .. table.concat(bits, ", ") .. " |" .. extra)
+    end
+
+    add("-- Rod tiap player (skin attr | hasil | mesh | kandidat teratas):")
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local m = plr.Character and plr.Character:FindFirstChild("!!!EQUIPPED_TOOL!!!")
+        local skin = tostring(plr:GetAttribute("FishingRodSkin"))
+        if m then
+            local top, n = candidates(m, 2)
+            local c1 = top[1]
+            add(string.format("  %s | skin=%s | hasil=%s | %d mesh | %s",
+                plr.Name, skin, tostring(getRod(plr)), n,
+                c1 and string.format("%s cov%.2f jac%.2f", c1.name, c1.cov, c1.jac) or "tanpa kandidat"))
+        else
+            add("  " .. plr.Name .. " | skin=" .. skin .. " | ga ada EQUIPPED_TOOL")
+        end
     end
 
     add("-- ReplicatedStorage children:")
