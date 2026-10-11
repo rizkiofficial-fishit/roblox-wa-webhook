@@ -15,6 +15,8 @@
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
+local UserInputService = game:GetService("UserInputService")
+local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 ------------------------------------------------------------
 -- KONFIGURASI
@@ -22,7 +24,7 @@ local LocalPlayer = Players.LocalPlayer
 local UPDATE_INTERVAL = 2
 
 -- Notif ke WA (lewat Discord webhook -> discordToWa)
-local WEBHOOK_URL    = "https://discord.com/api/webhooks/1549381299142262825/skfFFSZY-TeYvlf-xfWYJ9PgUY4f7ENWGtq4CEcmgM673HRuwvnii8f8x8oaVPwXkUOx"
+local WEBHOOK_URL    = "ISI_URL_DISCORD_WEBHOOK_DI_SINI"
 local NOTIFY_INTERVAL = 30 * 60   -- 30 menit (dalam detik)
 local SEND_ON_START   = true      -- kirim 1x langsung pas script jalan
 local BOT_NAME        = "Fish It Scanner"
@@ -134,7 +136,9 @@ local function getRod(player)
     for _, holder in ipairs({ player, char }) do
         if holder then
             for k, v in pairs(holder:GetAttributes()) do
-                if string.find(string.lower(k), "rod") then return tostring(v) end
+                if string.find(string.lower(k), "rod") and type(v) == "string" and v ~= "" then
+                    return v
+                end
             end
         end
     end
@@ -142,13 +146,13 @@ local function getRod(player)
     -- 2) Attribute di player / character
     for _, attr in ipairs(ROD_ATTRIBUTE_NAMES) do
         local v = player:GetAttribute(attr) or (char and char:GetAttribute(attr))
-        if v then return tostring(v) end
+        if type(v) == "string" and v ~= "" then return v end
     end
 
     -- 3) Value object di dalam player (mis. Data/Equipped)
     for _, attr in ipairs(ROD_ATTRIBUTE_NAMES) do
         local obj = player:FindFirstChild(attr, true)
-        if obj and obj:IsA("ValueBase") then
+        if obj and obj:IsA("ValueBase") and type(obj.Value) ~= "boolean" then
             return tostring(obj.Value)
         end
     end
@@ -189,7 +193,7 @@ gui.ResetOnSpawn = false
 gui.Parent = parent
 
 local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 380, 0, 350)
+frame.Size = IS_MOBILE and UDim2.new(0, 300, 0, 240) or UDim2.new(0, 380, 0, 350)
 frame.Position = UDim2.new(0, 10, 0, 10)
 frame.BackgroundColor3 = Color3.fromRGB(20, 20, 28)
 frame.BackgroundTransparency = 0.15
@@ -200,7 +204,8 @@ frame.Parent = gui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -40, 0, 26)
+title.Size = UDim2.new(1, -100, 0, 26)
+title.TextTruncate = Enum.TextTruncate.AtEnd
 title.Position = UDim2.new(0, 10, 0, 4)
 title.BackgroundTransparency = 1
 title.Font = Enum.Font.GothamBold
@@ -341,6 +346,46 @@ dbgBtn.MouseButton1Click:Connect(function()
     task.delay(1.5, function() dbgBtn.Text = "?" end)
 end)
 
+-- Tombol minimize "-" : ciutin panel jadi bar kecil (script tetap jalan & notif tetap kekirim)
+local fullSize = frame.Size
+local minimized = false
+
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.new(0, 24, 0, 24)
+minBtn.Position = UDim2.new(1, -90, 0, 5)
+minBtn.BackgroundColor3 = Color3.fromRGB(90, 90, 105)
+minBtn.Text = "-"
+minBtn.TextColor3 = Color3.new(1, 1, 1)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 14
+minBtn.Parent = frame
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+
+local function setMinimized(state)
+    minimized = state
+    posLabel.Visible = not state
+    list.Visible = not state
+    nameBox.Visible = not state
+    saveBtn.Visible = not state
+
+    if state then
+        frame.Size = UDim2.new(0, 230, 0, 34)
+        minBtn.Text = "+"
+    else
+        frame.Size = fullSize
+        minBtn.Text = "-"
+    end
+end
+
+minBtn.MouseButton1Click:Connect(function()
+    setMinimized(not minimized)
+end)
+
+-- Mulai dalam keadaan ke-minimize kalau diatur dari config
+if cfg.START_MINIMIZED then
+    setMinimized(true)
+end
+
 local running = true
 close.MouseButton1Click:Connect(function()
     running = false
@@ -361,7 +406,7 @@ local function render()
     end
 
     local rows = scan()
-    title.Text = "Fish It Scanner - " .. #rows .. " player"
+    title.Text = (minimized and "Scanner · " or "Fish It Scanner - ") .. #rows .. " player"
 
     for _, r in ipairs(rows) do
         local l = Instance.new("TextLabel")
