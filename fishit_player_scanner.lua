@@ -147,7 +147,7 @@ local function buildTemplates()
     for _, root in ipairs(roots) do
         for _, d in ipairs(root:GetDescendants()) do
             scanned = scanned + 1
-            if scanned % 500 == 0 then task.wait() end
+            if scanned % 1500 == 0 then task.wait() end
             if d:IsA("MeshPart") and d.MeshId ~= "" then
                 local r = templateRoot(d, root)
                 if r then
@@ -264,6 +264,8 @@ end
 local function rodFromEquippedModel(char)
     local m = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
     if not m then return nil end
+
+    if not templates and #learned == 0 then return "memuat..." end
 
     local matched = matchRod(m)
     if matched then return matched end
@@ -821,6 +823,12 @@ end
 task.spawn(function()
     if SEND_ON_START then
         task.wait(5)
+        local waited = 0
+        while not templates and waited < 90 and running do
+            task.wait(1)
+            waited = waited + 1
+        end
+        task.wait(1)
         if running then sendWebhook() end
     end
     while running do
