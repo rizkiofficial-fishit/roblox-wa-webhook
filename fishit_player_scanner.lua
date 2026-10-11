@@ -5,17 +5,19 @@
 
     CARA PAKAI:
     1. Isi WEBHOOK_URL di bawah (wajib kalau mau notif ke WA).
-    2. Jalankan script, lalu keliling ke tiap pulau. Berdiri di pulau itu,
-       ketik nama pulaunya di kolom bawah panel, tekan "Simpan lokasi".
-       Pulau langsung terdaftar, ga perlu edit file.
-       (Baris Lua-nya juga di-copy ke clipboard kalau executor support, biar
-       bisa ditempel ke tabel ISLANDS supaya permanen.)
-    Panel muncul di kiri atas, update tiap UPDATE_INTERVAL detik.
+    2. Jalankan script. Panel muncul di kiri atas.
+    3. Simpan pulau: berdiri di pulau, ketik nama pulau di kolom bawah, tekan "Simpan lokasi".
+    4. AJARIN ROD (kalau rod kamu tampil "tidak dikenal"): pegang rod kamu,
+       ketik nama rodnya di kolom bawah, tekan tombol "Rod". Disimpan ke file
+       FishItRods.json (kalau executor support writefile), jadi permanen.
+    5. Tombol "?" = dump debug (kandidat rod + skor) ke clipboard & console.
 ]]
 
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local UserInputService = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
 
 ------------------------------------------------------------
@@ -23,15 +25,12 @@ local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.Keyboar
 ------------------------------------------------------------
 local UPDATE_INTERVAL = 2
 
--- Notif ke WA (lewat Discord webhook -> discordToWa)
-local WEBHOOK_URL    = "https://discord.com/api/webhooks/1549381299142262825/skfFFSZY-TeYvlf-xfWYJ9PgUY4f7ENWGtq4CEcmgM673HRuwvnii8f8x8oaVPwXkUOx"
-local NOTIFY_INTERVAL = 30 * 60   -- 30 menit (dalam detik)
-local SEND_ON_START   = true      -- kirim 1x langsung pas script jalan
+local WEBHOOK_URL    = "ISI_URL_DISCORD_WEBHOOK_DI_SINI"
+local NOTIFY_INTERVAL = 30 * 60
+local SEND_ON_START   = true
 local BOT_NAME        = "Fish It Scanner"
+local RODS_FILE       = "FishItRods.json"
 
--- {nama pulau, titik tengah, radius}
--- GANTI sesuai koordinat asli di game
--- Kosongin aja, pulau bisa ditambah langsung dari panel (tombol "Simpan lokasi")
 local ISLANDS = {
     { "kohana",                Vector3.new(-644, 16, 627),     250 },
     { "kohana vulcano",        Vector3.new(-512, 18, 155),     250 },
@@ -60,11 +59,8 @@ local ISLANDS = {
     { "thorne room",           Vector3.new(-1236, -854, 5502), 250 },
 }
 
--- Tempat lain yang mungkin nyimpen nama rod (dicek berurutan)
 local ROD_ATTRIBUTE_NAMES = { "EquippedRod", "Rod", "FishingRod", "CurrentRod" }
 
--- Override config dari luar (dipakai kalau script dijalankan via loadstring).
--- Jadi URL webhook & daftar pulau cukup ditulis di executor, ga perlu masuk file GitHub.
 local cfg = (getgenv and getgenv().FishItConfig) or {}
 if cfg.WEBHOOK_URL then WEBHOOK_URL = cfg.WEBHOOK_URL end
 if cfg.NOTIFY_INTERVAL then NOTIFY_INTERVAL = cfg.NOTIFY_INTERVAL end
@@ -76,7 +72,6 @@ if type(cfg.ISLANDS) == "table" then ISLANDS = cfg.ISLANDS end
 ------------------------------------------------------------
 -- LOGIKA
 ------------------------------------------------------------
--- "kohana vulcano" -> "Kohana Vulcano"
 local function titleCase(s)
     return (string.gsub(s, "(%a)([%w']*)", function(a, b) return string.upper(a) .. b end))
 end
@@ -94,7 +89,6 @@ local function getIsland(pos)
     end
     if bestName then return bestName end
 
-    -- kalau di luar semua radius, tampilin pulau terdekat
     local nearName, nearDist = "?", math.huge
     for _, island in ipairs(ISLANDS) do
         local d = (pos - island[2]).Magnitude
@@ -105,29 +99,186 @@ local function getIsland(pos)
     return string.format("Dekat %s (%d stud)", nearName, math.floor(nearDist))
 end
 
--- Game nyimpen rod yang lagi dipegang di model "!!!EQUIPPED_TOOL!!!" di dalam character
+------------------------------------------------------------
+-- DETEKSI ROD (lewat MeshId)
+------------------------------------------------------------
+-- templates: rod/item model dari game (ReplicatedStorage dll), { name=, path=, set=, n= }
+-- learned:   rod yang kamu ajarin manual lewat tombol "Rod"
+local templates = nil
+local learned = {}
+local rodCache = {} -- signature -> nama
+
+local function meshSet(root)
+    local set, n = {}, 0
+    for _, d in ipairs(root:GetDescendants()) do
+        if d:IsA("MeshPart") and d.MeshId ~= "" and not set[d.MeshId] then
+            set[d.MeshId] = true
+            n = n + 1
+        end
+    end
+    return set, n
+end
+
+local function signature(set)
+    local ids = {}
+    for id in pairs(set) do ids[#ids + 1] = id end
+    table.sort(ids)
+    return table.concat(ids, "|")
+end
+
+-- cari "model item" teratas dari sebuah MeshPart
+local function templateRoot(mp, stopAt)
+    local best
+    local cur = mp
+    while cur and cur ~= stopAt do
+        if cur:IsA("Model") or cur:IsA("Tool") then best = cur end
+        cur = cur.Parent
+    end
+    return best or mp.Parent
+end
+
+local function buildTemplates()
+    local groups, order = {}, {}
+    local scanned = 0
+    local roots = { ReplicatedStorage }
+    pcall(function() table.insert(roots, game:GetService("ReplicatedFirst")) end)
+    pcall(function() table.insert(roots, game:GetService("StarterPack")) end)
+
+    for _, root in ipairs(roots) do
+        for _, d in ipairs(root:GetDescendants()) do
+            scanned = scanned + 1
+            if scanned % 500 == 0 then task.wait() end
+            if d:IsA("MeshPart") and d.MeshId ~= "" then
+                local r = templateRoot(d, root)
+                if r then
+                    local g = groups[r]
+                    if not g then
+                        g = { set = {}, n = 0 }
+                        groups[r] = g
+                        order[#order + 1] = r
+                    end
+                    if not g.set[d.MeshId] then
+                        g.set[d.MeshId] = true
+                        g.n = g.n + 1
+                    end
+                end
+            end
+        end
+    end
+
+    local out = {}
+    for _, r in ipairs(order) do
+        local g = groups[r]
+        local nm = r.Name
+        if #nm > 2 and not tonumber(nm) then
+        out[#out + 1] = {
+            name = r.Name,
+            path = r:GetFullName(),
+            set = g.set,
+            n = g.n,
+            rodish = (string.find(string.lower(r:GetFullName()), "rod") ~= nil),
+        }
+        end
+    end
+    templates = out
+end
+
+task.spawn(function() pcall(buildTemplates) end)
+
+-- load rod yang pernah diajarin
+pcall(function()
+    if isfile and readfile and isfile(RODS_FILE) then
+        local data = HttpService:JSONDecode(readfile(RODS_FILE))
+        for _, e in ipairs(data) do
+            local set, n = {}, 0
+            for _, id in ipairs(e.ids) do set[id] = true; n = n + 1 end
+            learned[#learned + 1] = { name = e.name, set = set, n = n, ids = e.ids }
+        end
+    end
+end)
+
+local function saveLearned()
+    pcall(function()
+        if writefile then
+            local data = {}
+            for _, e in ipairs(learned) do data[#data + 1] = { name = e.name, ids = e.ids } end
+            writefile(RODS_FILE, HttpService:JSONEncode(data))
+        end
+    end)
+end
+
+-- hitung skor model terhadap satu entry
+local function scoreOf(set, n, t)
+    local common = 0
+    for id in pairs(set) do
+        if t.set[id] then common = common + 1 end
+    end
+    if common == 0 then return 0, 0, 0 end
+    local coverage = common / n                    -- berapa % mesh model yang ada di template
+    local jac = common / (n + t.n - common)
+    return coverage, jac, common
+end
+
+local function candidates(model, k)
+    local set, n = meshSet(model)
+    local res = {}
+    if n == 0 then return res, n end
+    local function consider(list, isLearned)
+        for _, t in ipairs(list) do
+            local cov, jac, common = scoreOf(set, n, t)
+            if cov >= 0.5 then
+                local s = jac + (t.rodish and 0.05 or 0) + (isLearned and 1 or 0)
+                res[#res + 1] = { name = t.name, path = t.path, cov = cov, jac = jac, score = s, common = common }
+            end
+        end
+    end
+    consider(learned, true)
+    if templates then consider(templates, false) end
+    table.sort(res, function(a, b) return a.score > b.score end)
+    local top = {}
+    for i = 1, math.min(k or 5, #res) do top[i] = res[i] end
+    return top, n
+end
+
+local function matchRod(model)
+    if not model then return nil end
+    local set, n = meshSet(model)
+    if n == 0 then return nil end
+
+    local sig = signature(set)
+    if rodCache[sig] then return rodCache[sig] end
+
+    local top = candidates(model, 1)
+    local best = top[1]
+    if best and best.cov >= 0.7 and (best.jac >= 0.4 or best.score >= 1) then
+        rodCache[sig] = best.name
+        return best.name
+    end
+    return nil
+end
+
 local function rodFromEquippedModel(char)
     local m = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
     if not m then return nil end
 
-    -- a) attribute string yang namanya mirip nama item
+    local matched = matchRod(m)
+    if matched then return matched end
+
     for k, v in pairs(m:GetAttributes()) do
         local key = string.lower(k)
-        if type(v) == "string" and v ~= ""
+        if type(v) == "string" and v ~= "" and key ~= "owner"
             and (string.find(key, "name") or string.find(key, "rod")
                 or string.find(key, "item") or string.find(key, "tool")) then
             return v
         end
     end
 
-    -- b) StringValue di dalamnya
     for _, d in ipairs(m:GetDescendants()) do
         if d:IsA("StringValue") and d.Value ~= "" then
             return d.Value
         end
     end
 
-    -- c) nama model/folder anak langsung (selain nama generik)
     local generic = { handle = true, tool = true, model = true, rod = true, mesh = true }
     for _, c in ipairs(m:GetChildren()) do
         if (c:IsA("Model") or c:IsA("Folder") or c:IsA("Tool") or c:IsA("Accessory"))
@@ -136,7 +287,7 @@ local function rodFromEquippedModel(char)
         end
     end
 
-    return nil
+    return "tidak dikenal"
 end
 
 local function getRod(player)
@@ -145,7 +296,6 @@ local function getRod(player)
     local fromModel = rodFromEquippedModel(char)
     if fromModel then return fromModel end
 
-    -- 1) Tool yang lagi dipegang (paling umum)
     if char then
         local fallbackTool
         for _, child in ipairs(char:GetChildren()) do
@@ -159,7 +309,6 @@ local function getRod(player)
         if fallbackTool then return fallbackTool end
     end
 
-    -- 1b) Model/aksesori rod yang nempel di character (nama mengandung "rod")
     if char then
         for _, d in ipairs(char:GetDescendants()) do
             if (d:IsA("Model") or d:IsA("Accessory") or d:IsA("Folder") or d:IsA("Tool"))
@@ -169,7 +318,6 @@ local function getRod(player)
         end
     end
 
-    -- 1c) Attribute apa pun yang namanya mengandung "rod"
     for _, holder in ipairs({ player, char }) do
         if holder then
             for k, v in pairs(holder:GetAttributes()) do
@@ -180,13 +328,11 @@ local function getRod(player)
         end
     end
 
-    -- 2) Attribute di player / character
     for _, attr in ipairs(ROD_ATTRIBUTE_NAMES) do
         local v = player:GetAttribute(attr) or (char and char:GetAttribute(attr))
         if type(v) == "string" and v ~= "" then return v end
     end
 
-    -- 3) Value object di dalam player (mis. Data/Equipped)
     for _, attr in ipairs(ROD_ATTRIBUTE_NAMES) do
         local obj = player:FindFirstChild(attr, true)
         if obj and obj:IsA("ValueBase") and type(obj.Value) ~= "boolean" then
@@ -197,12 +343,25 @@ local function getRod(player)
     return "-"
 end
 
+-- FLAG_Fishing cuma true sesaat (pas lempar/nunggu), jadi dibuat "nempel":
+-- dianggap mancing kalau sinyalnya pernah aktif dalam FISHING_HOLD detik terakhir.
+local FISHING_HOLD = 45
+local lastFishing = {}
+
+local function isFishing(plr)
+    local now = os.clock()
+    local sig = plr:GetAttribute("FLAG_Fishing") == true
+        or plr:GetAttribute("EquippedPetState") == "Fishing"
+    if sig then lastFishing[plr] = now end
+    local t = lastFishing[plr]
+    return t ~= nil and (now - t) <= FISHING_HOLD
+end
+
 local function scan()
     local rows = {}
     for _, plr in ipairs(Players:GetPlayers()) do
         local char = plr.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
-        -- Game sendiri nyimpen lokasi player di attribute "LocationName"
         local loc = plr:GetAttribute("LocationName")
         local island
         if type(loc) == "string" and loc ~= "" then
@@ -214,7 +373,7 @@ local function scan()
         end
 
         table.insert(rows, {
-            fishing = plr:GetAttribute("FLAG_Fishing") == true,
+            fishing = isFishing(plr),
             display = plr.DisplayName,
             name = plr.DisplayName .. " (@" .. plr.Name .. ")",
             island = island,
@@ -299,19 +458,29 @@ local layout = Instance.new("UIListLayout")
 layout.Padding = UDim.new(0, 4)
 layout.Parent = list
 
--- Input nama pulau + tombol simpan lokasi
 local nameBox = Instance.new("TextBox")
-nameBox.Size = UDim2.new(1, -125, 0, 26)
+nameBox.Size = UDim2.new(1, -190, 0, 26)
 nameBox.Position = UDim2.new(0, 10, 1, -32)
 nameBox.BackgroundColor3 = Color3.fromRGB(35, 35, 48)
 nameBox.TextColor3 = Color3.new(1, 1, 1)
-nameBox.PlaceholderText = "Nama pulau tempat kamu berdiri"
+nameBox.PlaceholderText = "Nama pulau / rod"
 nameBox.PlaceholderColor3 = Color3.fromRGB(140, 140, 150)
 nameBox.Font = Enum.Font.Gotham
 nameBox.TextSize = 12
 nameBox.ClearTextOnFocus = false
 nameBox.Parent = frame
 Instance.new("UICorner", nameBox).CornerRadius = UDim.new(0, 6)
+
+local learnBtn = Instance.new("TextButton")
+learnBtn.Size = UDim2.new(0, 50, 0, 26)
+learnBtn.Position = UDim2.new(1, -170, 1, -32)
+learnBtn.BackgroundColor3 = Color3.fromRGB(150, 100, 40)
+learnBtn.Text = "Rod"
+learnBtn.TextColor3 = Color3.new(1, 1, 1)
+learnBtn.Font = Enum.Font.GothamBold
+learnBtn.TextSize = 12
+learnBtn.Parent = frame
+Instance.new("UICorner", learnBtn).CornerRadius = UDim.new(0, 6)
 
 local saveBtn = Instance.new("TextButton")
 saveBtn.Size = UDim2.new(0, 105, 0, 26)
@@ -343,7 +512,36 @@ saveBtn.MouseButton1Click:Connect(function()
     task.delay(1.5, function() saveBtn.Text = "Simpan lokasi" end)
 end)
 
--- Tombol debug "?" : dump info buat nyari tempat game nyimpen data rod
+-- Ajarin rod: pegang rod, ketik namanya, klik "Rod"
+learnBtn.MouseButton1Click:Connect(function()
+    local nm = nameBox.Text
+    local char = LocalPlayer.Character
+    local m = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
+    if nm == "" or not m then
+        learnBtn.Text = "Err"
+        task.delay(1.5, function() learnBtn.Text = "Rod" end)
+        return
+    end
+
+    local set, n = meshSet(m)
+    if n == 0 then return end
+    local ids = {}
+    for id in pairs(set) do ids[#ids + 1] = id end
+
+    -- timpa entry lama dengan nama yang sama
+    for i = #learned, 1, -1 do
+        if learned[i].name == nm then table.remove(learned, i) end
+    end
+    learned[#learned + 1] = { name = nm, set = set, n = n, ids = ids }
+    rodCache = {}
+    saveLearned()
+
+    nameBox.Text = ""
+    learnBtn.Text = "OK!"
+    task.delay(1.5, function() learnBtn.Text = "Rod" end)
+end)
+
+-- Tombol debug "?"
 local dbgBtn = Instance.new("TextButton")
 dbgBtn.Size = UDim2.new(0, 24, 0, 24)
 dbgBtn.Position = UDim2.new(1, -60, 0, 5)
@@ -358,46 +556,65 @@ Instance.new("UICorner", dbgBtn).CornerRadius = UDim.new(0, 6)
 dbgBtn.MouseButton1Click:Connect(function()
     local out = {}
     local function add(s) out[#out + 1] = s end
-    local plr = LocalPlayer
-    local char = plr.Character
+    local char = LocalPlayer.Character
+    local eq = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
 
-    add("===== FISHITSCANNER DEBUG ROD =====")
-    add("-- Player children:")
-    for _, c in ipairs(plr:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
-    add("-- Player attributes:")
-    for k, v in pairs(plr:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
+    add("===== FISHITSCANNER DEBUG ROD v2 =====")
+    add("-- Template model ketemu: " .. tostring(templates and #templates or "belum jadi"))
+    add("-- Rod yang diajarin: " .. #learned)
 
-    if char then
-        add("-- Character children:")
-        for _, c in ipairs(char:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
-        add("-- Character attributes:")
-        for k, v in pairs(char:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
-        local eqTool = char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
-        if eqTool then
-            add("-- !!!EQUIPPED_TOOL!!! attributes:")
-            for k, v in pairs(eqTool:GetAttributes()) do add("  " .. tostring(k) .. " = " .. tostring(v)) end
-            add("-- !!!EQUIPPED_TOOL!!! descendants:")
-            local n = 0
-            for _, d in ipairs(eqTool:GetDescendants()) do
-                n = n + 1
-                if n > 80 then add("  ...") break end
-                local extra = ""
-                if d:IsA("ValueBase") then extra = " = " .. tostring(d.Value) end
-                add("  " .. d.ClassName .. " | " .. d.Name .. extra)
-            end
+    if eq then
+        local set, n = meshSet(eq)
+        add("-- Equipped: " .. n .. " mesh unik")
+        local i = 0
+        for id in pairs(set) do
+            i = i + 1
+            if i > 12 then add("  ...") break end
+            add("  " .. id)
         end
-        add("-- Descendants character yang namanya mengandung 'rod':")
-        for _, d in ipairs(char:GetDescendants()) do
-            if string.find(string.lower(d.Name), "rod") then
-                add("  " .. d.ClassName .. " | " .. d:GetFullName())
-            end
+        local top = candidates(eq, 8)
+        add("-- Kandidat terbaik (nama | coverage | jaccard | path):")
+        if #top == 0 then add("  (TIDAK ADA yang cocok - template rod ga ada di client)") end
+        for _, c in ipairs(top) do
+            add(string.format("  %s | %.2f | %.2f | %s", c.name, c.cov, c.jac, c.path))
         end
+        add("-- Hasil akhir: " .. tostring(matchRod(eq)))
+    else
+        add("-- Kamu lagi ga pegang rod (!!!EQUIPPED_TOOL!!! ga ada)")
     end
 
-    local bp = plr:FindFirstChildOfClass("Backpack")
-    if bp then
-        add("-- Backpack:")
-        for _, c in ipairs(bp:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
+    add("-- Sinyal mancing tiap player (FLAG_*, *Fish*, EquippedPetState, part FISHING):")
+    for _, plr in ipairs(Players:GetPlayers()) do
+        local bits = {}
+        for k, v in pairs(plr:GetAttributes()) do
+            local lk = string.lower(k)
+            if string.find(lk, "flag") or string.find(lk, "fish") or k == "EquippedPetState" then
+                bits[#bits + 1] = k .. "=" .. tostring(v)
+            end
+        end
+        local c = plr.Character
+        local extra = ""
+        if c then
+            if c:FindFirstChild("!!!FISHING_BAIT_MODEL!!!") then extra = extra .. " BAIT" end
+            if c:FindFirstChild("!!!FISHING_LANTERN!!!") then extra = extra .. " LANTERN" end
+            if c:FindFirstChild("!!!EQUIPPED_TOOL!!!") then extra = extra .. " TOOL" end
+        end
+        add("  " .. plr.Name .. " | " .. table.concat(bits, ", ") .. " |" .. extra)
+    end
+
+    add("-- ReplicatedStorage children:")
+    for _, c in ipairs(ReplicatedStorage:GetChildren()) do add("  " .. c.ClassName .. " | " .. c.Name) end
+
+    if templates then
+        add("-- Sample template yang path-nya mengandung 'rod' (maks 40):")
+        local shown = 0
+        for _, t in ipairs(templates) do
+            if t.rodish then
+                shown = shown + 1
+                if shown > 40 then add("  ...") break end
+                add(string.format("  %s (%d mesh) | %s", t.name, t.n, t.path))
+            end
+        end
     end
     add("===== END =====")
 
@@ -408,7 +625,7 @@ dbgBtn.MouseButton1Click:Connect(function()
     task.delay(1.5, function() dbgBtn.Text = "?" end)
 end)
 
--- Tombol minimize "-" : ciutin panel jadi bar kecil (script tetap jalan & notif tetap kekirim)
+-- Minimize
 local fullSize = frame.Size
 local minimized = false
 
@@ -429,6 +646,7 @@ local function setMinimized(state)
     list.Visible = not state
     nameBox.Visible = not state
     saveBtn.Visible = not state
+    learnBtn.Visible = not state
 
     if state then
         frame.Size = UDim2.new(0, 230, 0, 34)
@@ -443,7 +661,6 @@ minBtn.MouseButton1Click:Connect(function()
     setMinimized(not minimized)
 end)
 
--- Mulai dalam keadaan ke-minimize kalau diatur dari config
 if cfg.START_MINIMIZED then
     setMinimized(true)
 end
@@ -494,10 +711,8 @@ task.spawn(function()
 end)
 
 ------------------------------------------------------------
--- NOTIF WEBHOOK (tiap NOTIFY_INTERVAL detik)
+-- NOTIF WEBHOOK
 ------------------------------------------------------------
-local HttpService = game:GetService("HttpService")
-
 local httpRequest = (syn and syn.request)
     or (http and http.request)
     or http_request
@@ -507,7 +722,6 @@ local httpRequest = (syn and syn.request)
 local function buildReport()
     local rows = scan()
 
-    -- kelompokkan player per pulau
     local groups, order = {}, {}
     for _, r in ipairs(rows) do
         if not groups[r.island] then
@@ -517,7 +731,6 @@ local function buildReport()
         table.insert(groups[r.island], r)
     end
 
-    -- pulau paling rame di atas
     table.sort(order, function(a, b)
         if #groups[a] ~= #groups[b] then return #groups[a] > #groups[b] end
         return a < b
