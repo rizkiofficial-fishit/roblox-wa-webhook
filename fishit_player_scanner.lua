@@ -79,6 +79,28 @@ if type(cfg.GENERIC_RODS) == "table" then
 end
 if cfg.GENERIC_LABEL then GENERIC_LABEL = cfg.GENERIC_LABEL end
 
+-- Alert real-time & fitur tambahan
+local ALERT_COOLDOWN     = 10        -- jeda minimal antar kirim alert (detik), biar ga kena rate limit
+local EVENT_POLL         = 5         -- seberapa sering cek perubahan (detik)
+local ALERTS = { join = true, leave = true, island = true, fishing = true, spot = true, idle = true }
+local IDLE_MARK_MINUTES  = 5         -- tampil 💤 kalau ga mancing segini lama (menit)
+local IDLE_ALERT_MINUTES = 30        -- kirim alert idle lama setelah segini menit
+local SPOT_RADIUS        = 40        -- jarak (stud) antar lemparan kail dianggap "spot yang sama"
+local SPOT_MIN           = 3         -- minimal player buat alert spot rame
+local SPOT_COOLDOWN      = 15 * 60   -- jeda alert spot yang sama (detik)
+local SHOW_PET           = true      -- tampilin nama pet di notif rutin
+if cfg.ALERT_COOLDOWN then ALERT_COOLDOWN = cfg.ALERT_COOLDOWN end
+if cfg.EVENT_POLL then EVENT_POLL = cfg.EVENT_POLL end
+if type(cfg.ALERTS) == "table" then
+    for k, v in pairs(cfg.ALERTS) do ALERTS[k] = v end
+end
+if cfg.IDLE_MARK_MINUTES then IDLE_MARK_MINUTES = cfg.IDLE_MARK_MINUTES end
+if cfg.IDLE_ALERT_MINUTES then IDLE_ALERT_MINUTES = cfg.IDLE_ALERT_MINUTES end
+if cfg.SPOT_RADIUS then SPOT_RADIUS = cfg.SPOT_RADIUS end
+if cfg.SPOT_MIN then SPOT_MIN = cfg.SPOT_MIN end
+if cfg.SPOT_COOLDOWN then SPOT_COOLDOWN = cfg.SPOT_COOLDOWN end
+if cfg.SHOW_PET ~= nil then SHOW_PET = cfg.SHOW_PET end
+
 ------------------------------------------------------------
 -- LOGIKA
 ------------------------------------------------------------
@@ -372,6 +394,7 @@ end
 -- dianggap mancing kalau sinyalnya pernah aktif dalam FISHING_HOLD detik terakhir.
 local FISHING_HOLD = 45
 local lastFishing = {}
+local idleSince = {}
 
 local function isFishing(plr)
     local now = os.clock()
@@ -380,11 +403,26 @@ local function isFishing(plr)
         or plr:GetAttribute("EquippedPetState") == "Fishing"
     if sig then lastFishing[plr] = now end
     local t = lastFishing[plr]
-    return t ~= nil and (now - t) <= FISHING_HOLD
+    local f = t ~= nil and (now - t) <= FISHING_HOLD
+    if f then
+        idleSince[plr] = nil
+    elseif not idleSince[plr] then
+        idleSince[plr] = now
+    end
+    return f
+end
+
+local function statusMark(r)
+    if r.fishing then
+        return (r.phase == "Waiting") and "🟡" or "🟢"
+    end
+    if r.idleMin >= IDLE_MARK_MINUTES then return "💤" end
+    return "⚪"
 end
 
 local function scan()
     local rows = {}
+    local now = os.clock()
     for _, plr in ipairs(Players:GetPlayers()) do
         local char = plr.Character
         local hrp = char and char:FindFirstChild("HumanoidRootPart")
@@ -398,9 +436,28 @@ local function scan()
             island = "(belum spawn)"
         end
 
+        local fishing = isFishing(plr)
+        local phase = plr:GetAttribute("PetFishingPhase")
+        local cast = plr:GetAttribute("PetFishingCastPosition")
+        local castPos = nil
+        if plr:GetAttribute("PetFishingActive") == true and typeof(cast) == "Vector3" and cast.Magnitude > 1 then
+            castPos = cast
+        end
+        local pet = plr:GetAttribute("EquippedPetModelName")
+        local skin = plr:GetAttribute("FishingRodSkin")
+
         table.insert(rows, {
-            fishing = isFishing(plr),
+            plr = plr,
+            uid = plr.UserId,
+            fishing = fishing,
+            phase = (type(phase) == "string") and phase or "None",
+            idleMin = (not fishing and idleSince[plr]) and ((now - idleSince[plr]) / 60) or 0,
+            castPos = castPos,
+            vip = plr:GetAttribute("VIP") == true,
+            pet = (type(pet) == "string" and pet ~= "") and pet or nil,
+            skin = (type(skin) == "string" and skin ~= "") and skin or nil,
             display = plr.DisplayName,
+            username = plr.Name,
             name = plr.DisplayName .. " (@" .. plr.Name .. ")",
             island = island,
             rod = getRod(plr),
@@ -738,7 +795,7 @@ local function render()
         l.TextColor3 = Color3.new(1, 1, 1)
         l.TextXAlignment = Enum.TextXAlignment.Left
         l.TextYAlignment = Enum.TextYAlignment.Center
-        l.Text = "  " .. (r.fishing and "🟢 " or "⚪ ") .. r.name .. "\n  Pulau: " .. r.island .. "  |  Rod: " .. r.rod
+        l.Text = "  " .. (statusMark(r) .. " ") .. r.name .. "\n  Pulau: " .. r.island .. "  |  Rod: " .. r.rod
         l.Parent = list
         Instance.new("UICorner", l).CornerRadius = UDim.new(0, 6)
     end
@@ -760,6 +817,47 @@ local httpRequest = (syn and syn.request)
     or request
     or (fluxus and fluxus.request)
 
+local function webhookReady()
+    if not httpRequest then
+        warn("[FishItScanner] executor kamu ga support http request")
+        return false
+    end
+    if WEBHOOK_URL == "" or string.find(WEBHOOK_URL, "ISI_URL") then
+        warn("[FishItScanner] WEBHOOK_URL belum diisi")
+        return false
+    end
+    return true
+end
+
+local function postWebhook(payload)
+    if not webhookReady() then return end
+    payload.username = BOT_NAME
+    local ok, err = pcall(function()
+        httpRequest({
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = HttpService:JSONEncode(payload),
+        })
+    end)
+    if not ok then warn("[FishItScanner] gagal kirim webhook: " .. tostring(err)) end
+end
+
+local function nameOf(r) return r.display .. (r.vip and " 👑" or "") end
+local function rodLabel(r) return (r.rod ~= "-") and r.rod or "–" end
+
+local function phaseText(r)
+    if r.fishing then
+        if r.phase == "Reeling" then return "🟢 Reeling" end
+        if r.phase == "Waiting" then return "🟡 Waiting" end
+        return "🟢 mancing"
+    end
+    if r.idleMin >= IDLE_MARK_MINUTES then
+        return string.format("💤 idle %d menit", math.floor(r.idleMin))
+    end
+    return "⚪ tidak mancing"
+end
+
 local function buildReport()
     local rows = scan()
 
@@ -778,59 +876,69 @@ local function buildReport()
     end)
 
     local blocks = {}
-    local fishingCount = 0
+    local fishingCount, idleCount = 0, 0
+    local skinCounts = {}
     for _, island in ipairs(order) do
         local members = groups[island]
         local lines = { string.format("🏝️ **%s** · %d player", island, #members) }
         for _, m in ipairs(members) do
-            local rod = (m.rod ~= "-") and m.rod or "–"
-            local mark = m.fishing and "🟢" or "⚪"
-            lines[#lines + 1] = string.format("> %s %s  ·  🎣 %s", mark, m.display, rod)
+            local line = string.format("> %s %s  ·  🎣 %s", statusMark(m), nameOf(m), rodLabel(m))
+            if SHOW_PET and m.pet then line = line .. "  ·  🐾 " .. m.pet end
+            if not m.fishing and m.idleMin >= IDLE_MARK_MINUTES then
+                line = line .. string.format("  ·  idle %d menit", math.floor(m.idleMin))
+                idleCount = idleCount + 1
+            end
+            lines[#lines + 1] = line
             if m.fishing then fishingCount = fishingCount + 1 end
+            if m.skin then skinCounts[m.skin] = (skinCounts[m.skin] or 0) + 1 end
         end
         blocks[#blocks + 1] = table.concat(lines, "\n")
     end
 
+    -- ringkasan
+    local summary = {}
+    local skinList = {}
+    for nm, c in pairs(skinCounts) do skinList[#skinList + 1] = { nm, c } end
+    table.sort(skinList, function(a, b)
+        if a[2] ~= b[2] then return a[2] > b[2] end
+        return a[1] < b[1]
+    end)
+    if #skinList > 0 then
+        local parts = {}
+        for _, s in ipairs(skinList) do parts[#parts + 1] = s[1] .. " ×" .. s[2] end
+        summary[#summary + 1] = "📊 Skin: " .. table.concat(parts, " · ")
+    end
+    if order[1] then
+        summary[#summary + 1] = string.format("📈 Pulau terpadat: %s (%d)", order[1], #groups[order[1]])
+    end
+    local summaryText = table.concat(summary, "\n")
+
     local text = table.concat(blocks, "\n\n")
-    if #text > 3800 then text = string.sub(text, 1, 3800) .. "\n..." end
-    return #rows, #order, text, fishingCount
+    local limit = 3800 - #summaryText
+    if #text > limit then text = string.sub(text, 1, limit) .. "\n..." end
+    if summaryText ~= "" then text = text .. "\n\n" .. summaryText end
+    return #rows, #order, text, fishingCount, idleCount
 end
 
 local function sendWebhook()
-    if not httpRequest then
-        warn("[FishItScanner] executor kamu ga support http request")
-        return
-    end
-    if WEBHOOK_URL == "" or string.find(WEBHOOK_URL, "ISI_URL") then
-        warn("[FishItScanner] WEBHOOK_URL belum diisi")
-        return
-    end
+    if not webhookReady() then return end
 
-    local count, islandCount, text, fishingCount = buildReport()
-    local payload = {
-        username = BOT_NAME,
+    local count, islandCount, text, fishingCount, idleCount = buildReport()
+    local head = string.format("👥 **%d** player  ·  🎣 **%d** mancing", count, fishingCount)
+    if idleCount > 0 then head = head .. string.format("  ·  💤 **%d** idle", idleCount) end
+    head = head .. string.format("  ·  🏝️ **%d** lokasi", islandCount)
+
+    postWebhook({
         content = "📍 **Update posisi pemancing** (" .. count .. " player di server)",
         embeds = {{
             title = "🎣 Fish It — Peta Pemancing",
-            description = string.format(
-                "👥 **%d** player  ·  🎣 **%d** mancing  ·  🏝️ **%d** lokasi\n🟢 lagi mancing   ⚪ tidak\n\n%s",
-                count, fishingCount, islandCount, text),
+            description = head .. "\n🟢 Reeling   🟡 Waiting   ⚪ tidak   💤 idle\n\n" .. text,
             color = 3447003,
             footer = { text = "Server " .. string.sub(game.JobId, 1, 8)
                 .. "  •  update tiap " .. math.floor(NOTIFY_INTERVAL / 60) .. " menit" },
             timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
         }},
-    }
-
-    local ok, err = pcall(function()
-        httpRequest({
-            Url = WEBHOOK_URL,
-            Method = "POST",
-            Headers = { ["Content-Type"] = "application/json" },
-            Body = HttpService:JSONEncode(payload),
-        })
-    end)
-    if not ok then warn("[FishItScanner] gagal kirim webhook: " .. tostring(err)) end
+    })
 end
 
 task.spawn(function()
@@ -848,4 +956,191 @@ task.spawn(function()
         task.wait(NOTIFY_INTERVAL)
         if running then sendWebhook() end
     end
+end)
+
+------------------------------------------------------------
+-- ALERT REAL-TIME (join/leave, pindah pulau, mulai/berhenti mancing, spot rame, idle lama)
+------------------------------------------------------------
+local ALERT_COLORS = {
+    join = 3066993, leave = 15158332, island = 3447003,
+    fishing = 10181046, spot = 15105570, idle = 9807270,
+}
+local alertQueue = {}
+
+local function pushAlert(kind, title, lines)
+    if not ALERTS[kind] then return end
+    if #alertQueue >= 50 then table.remove(alertQueue, 1) end
+    alertQueue[#alertQueue + 1] = { kind = kind, title = title, lines = lines }
+end
+
+-- gabung beberapa alert jadi 1 pesan, kirim paling cepat tiap ALERT_COOLDOWN detik
+task.spawn(function()
+    while running do
+        task.wait(ALERT_COOLDOWN)
+        if running and #alertQueue > 0 then
+            local batch = {}
+            for _ = 1, math.min(#alertQueue, 8) do
+                batch[#batch + 1] = table.remove(alertQueue, 1)
+            end
+            local title, desc
+            if #batch == 1 then
+                title, desc = batch[1].title, batch[1].lines
+            else
+                local parts = {}
+                for _, e in ipairs(batch) do
+                    parts[#parts + 1] = "**" .. e.title .. "**\n" .. e.lines
+                end
+                title = "🔔 Update server (" .. #batch .. ")"
+                desc = table.concat(parts, "\n\n")
+            end
+            postWebhook({
+                embeds = {{
+                    title = title,
+                    description = desc,
+                    color = ALERT_COLORS[batch[1].kind] or 3447003,
+                    footer = { text = "Server " .. string.sub(game.JobId, 1, 8) },
+                    timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                }},
+            })
+        end
+    end
+end)
+
+local function validIsland(isl)
+    return type(isl) == "string" and not string.find(isl, "^Dekat") and not string.find(isl, "^%(")
+end
+
+local function detailLine(r)
+    return "🎣 " .. rodLabel(r) .. " · " .. phaseText(r)
+end
+
+local prev = {}            -- uid -> { island, fishing, display, rod }
+local pendingIsland = {}   -- uid -> pulau baru yang nunggu konfirmasi (anti-flicker)
+local idleAlerted = {}
+local spotAlerted = {}
+local baseline = false
+
+local function monitorTick()
+    local rows = scan()
+    local now = os.clock()
+
+    for _, r in ipairs(rows) do
+        local snap = prev[r.uid]
+        if not snap then
+            snap = { island = r.island, fishing = r.fishing }
+            prev[r.uid] = snap
+        end
+        snap.display, snap.rod = r.display, rodLabel(r)
+
+        if baseline then
+            -- pindah pulau (harus stabil 2x cek berturut-turut)
+            if validIsland(r.island) and validIsland(snap.island) and r.island ~= snap.island then
+                if pendingIsland[r.uid] == r.island then
+                    pendingIsland[r.uid] = nil
+                    local old = snap.island
+                    snap.island = r.island
+                    pushAlert("island", "🏝️ PINDAH PULAU",
+                        string.format("%s: %s → %s\n%s", nameOf(r), old, r.island, detailLine(r)))
+                else
+                    pendingIsland[r.uid] = r.island
+                end
+            else
+                pendingIsland[r.uid] = nil
+                if validIsland(r.island) and not validIsland(snap.island) then snap.island = r.island end
+            end
+
+            -- mulai/berhenti mancing (semua player)
+            if r.fishing ~= snap.fishing then
+                if r.fishing then
+                    pushAlert("fishing", "🎣 MULAI MANCING",
+                        string.format("%s di %s\n%s", nameOf(r), r.island, detailLine(r)))
+                else
+                    pushAlert("fishing", "🛑 BERHENTI MANCING",
+                        string.format("%s di %s", nameOf(r), r.island))
+                end
+            end
+
+            -- idle lama (sekali per periode idle)
+            if r.fishing then
+                idleAlerted[r.uid] = nil
+            elseif r.idleMin >= IDLE_ALERT_MINUTES and not idleAlerted[r.uid] then
+                idleAlerted[r.uid] = true
+                pushAlert("idle", "💤 IDLE LAMA",
+                    string.format("%s · %s · 🎣 %s\nudah %d menit ga mancing",
+                        nameOf(r), r.island, rodLabel(r), math.floor(r.idleMin)))
+            end
+        else
+            if validIsland(r.island) then snap.island = r.island end
+        end
+        snap.fishing = r.fishing
+    end
+
+    -- spot rame: beberapa player nembak kail ke titik yang berdekatan
+    if baseline then
+        local used = {}
+        local fishers = {}
+        for _, r in ipairs(rows) do
+            if r.fishing and r.castPos then fishers[#fishers + 1] = r end
+        end
+        for i, a in ipairs(fishers) do
+            if not used[i] then
+                local cluster = { a }
+                used[i] = true
+                for j, b in ipairs(fishers) do
+                    if not used[j] and (a.castPos - b.castPos).Magnitude <= SPOT_RADIUS then
+                        used[j] = true
+                        cluster[#cluster + 1] = b
+                    end
+                end
+                if #cluster >= SPOT_MIN then
+                    local key = math.floor(a.castPos.X / SPOT_RADIUS) .. ":" .. math.floor(a.castPos.Z / SPOT_RADIUS)
+                    if now - (spotAlerted[key] or -math.huge) > SPOT_COOLDOWN then
+                        spotAlerted[key] = now
+                        local names = {}
+                        for _, c in ipairs(cluster) do names[#names + 1] = c.display end
+                        pushAlert("spot", "🔥 SPOT RAME",
+                            string.format("%d player nembak spot yang sama di %s\n%s",
+                                #cluster, a.island, table.concat(names, " · ")))
+                    end
+                end
+            end
+        end
+    end
+
+    baseline = true
+end
+
+task.spawn(function()
+    while running do
+        pcall(monitorTick)
+        task.wait(EVENT_POLL)
+    end
+end)
+
+-- join / leave
+Players.PlayerAdded:Connect(function(plr)
+    task.delay(6, function() -- tunggu character & atribut ke-load
+        if not running or not plr.Parent then return end
+        local row
+        for _, r in ipairs(scan()) do
+            if r.plr == plr then row = r break end
+        end
+        if not row then return end
+        pushAlert("join", "➕ JOIN",
+            string.format("%s · 🎣 %s\n📍 %s\n👥 sekarang %d player",
+                nameOf(row), rodLabel(row), row.island, #Players:GetPlayers()))
+    end)
+end)
+
+Players.PlayerRemoving:Connect(function(plr)
+    local snap = prev[plr.UserId]
+    local isl = (snap and validIsland(snap.island)) and snap.island or "?"
+    local remaining = math.max(#Players:GetPlayers() - 1, 0)
+    pushAlert("leave", "➖ LEAVE",
+        string.format("%s · terakhir di %s\n👥 sekarang %d player", plr.DisplayName, isl, remaining))
+    prev[plr.UserId] = nil
+    idleAlerted[plr.UserId] = nil
+    pendingIsland[plr.UserId] = nil
+    lastFishing[plr] = nil
+    idleSince[plr] = nil
 end)
