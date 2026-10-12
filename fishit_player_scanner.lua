@@ -25,7 +25,7 @@ local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.Keyboar
 ------------------------------------------------------------
 local UPDATE_INTERVAL = 2
 
-local WEBHOOK_URL    = "https://discord.com/api/webhooks/1549381299142262825/skfFFSZY-TeYvlf-xfWYJ9PgUY4f7ENWGtq4CEcmgM673HRuwvnii8f8x8oaVPwXkUOx"
+local WEBHOOK_URL    = "ISI_URL_DISCORD_WEBHOOK_DI_SINI"
 local NOTIFY_INTERVAL = 30 * 60
 local SEND_ON_START   = true
 local BOT_NAME        = "Fish It Scanner"
