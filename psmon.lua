@@ -1,6 +1,5 @@
 -- ============================================================
--- PS MONITOR (webhook langsung)
--- Dijalankan buyer lewat:
+-- PS MONITOR v2 (webhook langsung)
 --
 -- getgenv().PSMON = {
 --     webhook  = "https://discord.com/api/webhooks/xxx/yyy",
@@ -11,47 +10,66 @@
 --     -- interval = 15,                               -- detik, minimal 10
 -- }
 -- loadstring(game:HttpGet("https://raw.githubusercontent.com/USERNAME/REPO/main/psmon.lua"))()
+--
+-- Tanda script jalan:
+--   1. Notifikasi "PS Monitor aktif" muncul di layar game
+--   2. Console: [PSMON] ... (status tiap kirim)
 -- ============================================================
 
-local cfg = getgenv().PSMON or {}
-
-if type(cfg.webhook) ~= "string" or not cfg.webhook:find("^https://") then
-    warn("[PSMON] webhook belum diisi / tidak valid")
-    return
-end
-
-if getgenv().PSMON_RUNNING then
-    warn("[PSMON] sudah berjalan")
-    return
-end
-
+local StarterGui = game:GetService("StarterGui")
 local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local LP = Players.LocalPlayer
 
-local req = (syn and syn.request) or (http and http.request) or http_request or request
-if not req then
-    warn("[PSMON] executor tidak support request()")
+local function notify(text)
+    print("[PSMON] " .. text)
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "PS Monitor",
+            Text = text,
+            Duration = 6,
+        })
+    end)
+end
+
+local cfg = (getgenv and getgenv().PSMON) or {}
+
+if type(cfg.webhook) ~= "string" or not cfg.webhook:find("^https://") then
+    notify("GAGAL: webhook belum diisi / bukan https")
+    return
+end
+
+if getgenv().PSMON_RUNNING then
+    notify("sudah berjalan (rejoin atau set PSMON_RUNNING=false)")
+    return
+end
+
+local httpRequest = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+    or (fluxus and fluxus.request)
+
+if not httpRequest then
+    notify("GAGAL: executor tidak support request()")
     return
 end
 
 -- kalau banyak akun di 1 sesi, hanya akun reporter yang kirim
 if cfg.reporter and LP.Name ~= cfg.reporter then
+    print("[PSMON] bukan akun reporter, dilewati")
     return
 end
 
 getgenv().PSMON_RUNNING = true
 
 local INTERVAL = math.max(tonumber(cfg.interval) or 15, 10)
-local WEBHOOK = cfg.webhook:gsub("%?.*$", ""):gsub("/+$", "")
+local WEBHOOK = (cfg.webhook:gsub("%?.*$", ""):gsub("/+$", ""))
 local NAME = string.upper(tostring(cfg.name or "SESI"))
 local PS_ID = (game.PrivateServerId ~= "" and game.PrivateServerId) or game.JobId
 
 -- ============================================================
 -- BOOST (hitung mundur dari sisa waktu yang diisi)
--- Waktu berakhir disimpan ke file (kalau executor support), jadi
--- rejoin / execute ulang dengan isi boost yang SAMA tidak mengulang
--- hitungan dari awal. Ganti isi dur / mult = hitungan baru.
 -- ============================================================
 
 local function parseDur(s)
@@ -62,46 +80,13 @@ local function parseDur(s)
     return ((d * 24 + h) * 60 + m) * 60
 end
 
-local boostEnds = nil
-local boostMult = 0
-
-local BOOST_FILE = "psmon_boost_" .. NAME:gsub("[^%w_%-]", "_") .. ".json"
-
-local function loadBoost(sig)
-    if type(isfile) ~= "function" or type(readfile) ~= "function" then
-        return nil
-    end
-    local ok, data = pcall(function()
-        if not isfile(BOOST_FILE) then
-            return nil
-        end
-        return HttpService:JSONDecode(readfile(BOOST_FILE))
-    end)
-    if ok and type(data) == "table" and data.sig == sig and tonumber(data.ends) then
-        return tonumber(data.ends)
-    end
-    return nil
-end
-
-local function saveBoost(sig, ends)
-    if type(writefile) ~= "function" then
-        return
-    end
-    pcall(function()
-        writefile(BOOST_FILE, HttpService:JSONEncode({ sig = sig, ends = ends }))
-    end)
-end
+local boostEnds, boostMult = nil, 0
 
 if type(cfg.boost) == "table" then
     local sec = parseDur(cfg.boost.dur)
     if sec > 0 then
+        boostEnds = os.time() + sec
         boostMult = tonumber(cfg.boost.mult) or 0
-        local sig = tostring(boostMult) .. "|" .. string.lower(tostring(cfg.boost.dur))
-        boostEnds = loadBoost(sig)
-        if not boostEnds then
-            boostEnds = os.time() + sec
-            saveBoost(sig, boostEnds)
-        end
     end
 end
 
@@ -154,11 +139,35 @@ local function build()
 end
 
 -- ============================================================
--- KIRIM / EDIT KE WEBHOOK
+-- HTTP
 -- ============================================================
 
-local msgId = nil
 local HEADERS = { ["Content-Type"] = "application/json" }
+
+local function call(url, method, body)
+    local ok, res = pcall(function()
+        return httpRequest({
+            Url = url,
+            Method = method,
+            Headers = HEADERS,
+            Body = body,
+        })
+    end)
+
+    if not ok then
+        return nil, "request error: " .. tostring(res)
+    end
+
+    if type(res) ~= "table" then
+        return nil, "response kosong"
+    end
+
+    return res
+end
+
+local function statusOf(res)
+    return tonumber(res.StatusCode or res.Status or res.status_code) or 0
+end
 
 local function decode(body)
     local ok, data = pcall(function()
@@ -167,72 +176,104 @@ local function decode(body)
     return ok and data or nil
 end
 
--- return true kalau berhasil, false kalau webhook tidak valid lagi
+local msgId = nil
+local editFails = 0
+local noEdit = false
+local lastState = nil
+
+local function setState(state, text)
+    if lastState ~= state then
+        lastState = state
+        notify(text)
+    end
+end
+
+-- return false kalau script harus berhenti
 local function send()
     local body = HttpService:JSONEncode({ content = build() })
 
-    -- edit pesan yang sudah ada
-    if msgId then
-        local r = req({
-            Url = WEBHOOK .. "/messages/" .. msgId,
-            Method = "PATCH",
-            Headers = HEADERS,
-            Body = body,
-        })
+    -- 1) edit pesan yang sudah ada
+    if msgId and not noEdit then
+        local res, err = call(WEBHOOK .. "/messages/" .. msgId, "PATCH", body)
 
-        if r and r.StatusCode == 200 then
-            return true
+        if res then
+            local st = statusOf(res)
+
+            if st == 200 or st == 204 then
+                editFails = 0
+                setState("ok", "terkirim ke Discord (edit tiap " .. INTERVAL .. "s)")
+                return true
+            end
+
+            if st == 429 then
+                local d = decode(res.Body or "")
+                task.wait((d and tonumber(d.retry_after) or 2) + 0.5)
+                return true
+            end
+
+            print("[PSMON] edit gagal, status " .. st)
+        else
+            print("[PSMON] edit error: " .. tostring(err))
         end
 
-        if r and r.StatusCode == 429 then
-            local d = decode(r.Body)
-            task.wait((d and tonumber(d.retry_after) or 2) + 0.5)
-            return true
-        end
-
-        -- pesan hilang / tidak bisa diedit -> kirim baru
+        editFails = editFails + 1
         msgId = nil
+
+        if editFails >= 3 then
+            noEdit = true
+            INTERVAL = math.max(INTERVAL, 60)
+            print("[PSMON] edit tidak didukung, mode kirim baru tiap " .. INTERVAL .. "s")
+        end
     end
 
-    -- kirim pesan baru
-    local r = req({
-        Url = WEBHOOK .. "?wait=true",
-        Method = "POST",
-        Headers = HEADERS,
-        Body = body,
-    })
+    -- 2) kirim pesan baru
+    local res, err = call(WEBHOOK .. "?wait=true", "POST", body)
 
-    if not r then
+    if not res then
+        setState("fail", "GAGAL kirim: " .. tostring(err))
         return true
     end
 
-    if r.StatusCode == 200 then
-        local d = decode(r.Body)
+    local st = statusOf(res)
+
+    if st == 200 or st == 204 then
+        local d = decode(res.Body or "")
         if d and d.id then
             msgId = d.id
+        elseif not noEdit then
+            noEdit = true
+            INTERVAL = math.max(INTERVAL, 60)
+            print("[PSMON] id pesan tidak terbaca, mode kirim baru tiap " .. INTERVAL .. "s")
         end
+        setState("ok", "terkirim ke Discord")
         return true
     end
 
-    if r.StatusCode == 429 then
-        local d = decode(r.Body)
+    if st == 429 then
+        local d = decode(res.Body or "")
         task.wait((d and tonumber(d.retry_after) or 2) + 0.5)
         return true
     end
 
-    if r.StatusCode == 401 or r.StatusCode == 404 then
-        warn("[PSMON] webhook tidak valid / sudah dihapus (" .. r.StatusCode .. ")")
+    if st == 401 or st == 404 then
+        notify("GAGAL: webhook tidak valid / dihapus (" .. st .. ")")
         return false
     end
 
+    setState("fail", "GAGAL kirim, status " .. st)
+    print("[PSMON] body: " .. tostring(res.Body))
     return true
 end
+
+notify("aktif | sesi " .. NAME .. " | mengirim...")
 
 task.spawn(function()
     while getgenv().PSMON_RUNNING do
         local ok, alive = pcall(send)
 
-        if ok and alive == false then
+        if not ok then
+            warn("[PSMON] error internal: " .. tostring(alive))
+        elseif alive == false then
             getgenv().PSMON_RUNNING = false
             break
         end
@@ -240,5 +281,3 @@ task.spawn(function()
         task.wait(INTERVAL)
     end
 end)
-
-print("[PSMON] aktif | sesi: " .. NAME .. " | interval: " .. INTERVAL .. "s")
