@@ -49,6 +49,9 @@ local PS_ID = (game.PrivateServerId ~= "" and game.PrivateServerId) or game.JobI
 
 -- ============================================================
 -- BOOST (hitung mundur dari sisa waktu yang diisi)
+-- Waktu berakhir disimpan ke file (kalau executor support), jadi
+-- rejoin / execute ulang dengan isi boost yang SAMA tidak mengulang
+-- hitungan dari awal. Ganti isi dur / mult = hitungan baru.
 -- ============================================================
 
 local function parseDur(s)
@@ -62,11 +65,43 @@ end
 local boostEnds = nil
 local boostMult = 0
 
+local BOOST_FILE = "psmon_boost_" .. NAME:gsub("[^%w_%-]", "_") .. ".json"
+
+local function loadBoost(sig)
+    if type(isfile) ~= "function" or type(readfile) ~= "function" then
+        return nil
+    end
+    local ok, data = pcall(function()
+        if not isfile(BOOST_FILE) then
+            return nil
+        end
+        return HttpService:JSONDecode(readfile(BOOST_FILE))
+    end)
+    if ok and type(data) == "table" and data.sig == sig and tonumber(data.ends) then
+        return tonumber(data.ends)
+    end
+    return nil
+end
+
+local function saveBoost(sig, ends)
+    if type(writefile) ~= "function" then
+        return
+    end
+    pcall(function()
+        writefile(BOOST_FILE, HttpService:JSONEncode({ sig = sig, ends = ends }))
+    end)
+end
+
 if type(cfg.boost) == "table" then
     local sec = parseDur(cfg.boost.dur)
     if sec > 0 then
-        boostEnds = os.time() + sec
         boostMult = tonumber(cfg.boost.mult) or 0
+        local sig = tostring(boostMult) .. "|" .. string.lower(tostring(cfg.boost.dur))
+        boostEnds = loadBoost(sig)
+        if not boostEnds then
+            boostEnds = os.time() + sec
+            saveBoost(sig, boostEnds)
+        end
     end
 end
 
@@ -206,6 +241,4 @@ task.spawn(function()
     end
 end)
 
-print("[PSMON] aktif | sesi: " .. NAME .. " | interval: " .. INTERVAL .. "s")
-print("[PSMON] aktif | sesi: " .. NAME .. " | interval: " .. INTERVAL .. "s")
 print("[PSMON] aktif | sesi: " .. NAME .. " | interval: " .. INTERVAL .. "s")
