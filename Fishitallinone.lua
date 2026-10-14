@@ -21,7 +21,8 @@
         -- WEBHOOK_URL = "https://discord.com/api/webhooks/aaa/bbb", -- webhook beda khusus Scanner
         -- PSMON_ENABLED = false,       -- matiin PS Monitor, Scanner aja
         -- SCANNER_ENABLED = false,     -- matiin Scanner, PS Monitor aja
-        -- START_MINIMIZED = true,
+        -- SHOW_SCANNER = true,         -- tampilkan panel Scanner (default: DISEMBUNYIKAN)
+        -- START_MINIMIZED = true,      -- (kalau panel ditampilkan) mulai dalam bentuk kecil
         -- ROD_DETECT = false,          -- matiin deteksi rod (PALING RINGAN, disarankan buat HP)
         -- ALL_TEMPLATES = true,        -- scan semua model game buat deteksi rod (berat)
     }
@@ -133,6 +134,7 @@ if cfg.SHOW_PET ~= nil then SHOW_PET = cfg.SHOW_PET end
 local ROD_DETECT    = cfg.ROD_DETECT ~= false       -- false = ga scan model rod sama sekali
 local ALL_TEMPLATES = cfg.ALL_TEMPLATES == true     -- false = cuma model yang path-nya mengandung "rod"
 local ROD_TTL       = tonumber(cfg.ROD_TTL) or 20   -- hasil deteksi rod di-cache segini detik
+local SHOW_SCANNER  = cfg.SHOW_SCANNER == true      -- panel Scanner disembunyikan kecuali true
 
 -- HTTP request (dipakai Scanner & PS Monitor)
 local httpRequest = (syn and syn.request)
@@ -970,6 +972,7 @@ if old then old:Destroy() end
 local gui = Instance.new("ScreenGui")
 gui.Name = "FishItScanner"
 gui.ResetOnSpawn = false
+gui.Enabled = SHOW_SCANNER
 gui.Parent = parent
 
 local frame = Instance.new("Frame")
@@ -1262,10 +1265,14 @@ do
         running = false
         pcall(function() gui:Destroy() end)
     end
+    -- panel disembunyikan? buka/tutup lewat executor: FishItScannerToggle()
+    g.FishItScannerToggle = function()
+        gui.Enabled = not gui.Enabled
+    end
 end
 
 local function render()
-    if minimized then
+    if minimized or not gui.Enabled then
         title.Text = "Scanner · " .. #Players:GetPlayers() .. " player"
         return
     end
