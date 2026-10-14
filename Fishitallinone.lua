@@ -5,7 +5,11 @@
       1. Player Scanner  : GUI + laporan berkala + alert real-time (join/leave, pindah pulau, dll)
       2. PS Monitor      : 1 pesan status server yang di-edit terus (daftar pemain, boost, dll)
 
-    CARA PAKAI (simple):
+    TANPA CONFIG: execute aja, nanti muncul FORM buat isi webhook -> tekan Start.
+    (Kalau webhook udah diisi di config di bawah, form dilewati & langsung jalan.
+     Mau form tetap muncul: FishItConfig = { SHOW_FORM = true })
+
+    CARA PAKAI (pakai config):
     getgenv().PSMON = {
         webhook  = "https://discord.com/api/webhooks/xxx/yyy",  -- dipakai PS Monitor (& Scanner kalau WEBHOOK_URL kosong)
         name     = "sesi7",
@@ -133,8 +137,9 @@ local httpRequest = (syn and syn.request)
 ------------------------------------------------------------
 -- PS MONITOR (jalan duluan, independen dari Scanner)
 ------------------------------------------------------------
-if PSMON_ENABLED then
-    local function startPSMon()
+local startPSMon
+do
+    function startPSMon()
         local StarterGui = game:GetService("StarterGui")
 
         local function notify(text)
@@ -345,10 +350,13 @@ if PSMON_ENABLED then
             return true
         end
 
+        local myGen = (getgenv().PSMON_GEN or 0) + 1
+        getgenv().PSMON_GEN = myGen
+
         notify("aktif | sesi " .. NAME .. " | mengirim...")
 
         task.spawn(function()
-            while getgenv().PSMON_RUNNING do
+            while getgenv().PSMON_RUNNING and getgenv().PSMON_GEN == myGen do
                 local ok, alive = pcall(send)
                 if not ok then
                     warn("[PSMON] error internal: " .. tostring(alive))
@@ -361,8 +369,168 @@ if PSMON_ENABLED then
         end)
     end
 
-    local okPS, errPS = pcall(startPSMon)
-    if not okPS then warn("[PSMON] gagal start: " .. tostring(errPS)) end
+end
+
+------------------------------------------------------------
+-- FORM SETUP (isi webhook lewat UI, lalu Start)
+------------------------------------------------------------
+local onSetupStart = nil -- diisi Scanner di bawah (kirim laporan pertama)
+local SETUP_FILE = "FishItSetup.json"
+
+do
+    local genv = (getgenv and getgenv()) or _G
+
+    local function validWebhook(s)
+        return type(s) == "string" and s:find("^https://") ~= nil
+            and s:find("/api/webhooks/", 1, true) ~= nil
+    end
+
+    local function trim(s)
+        return (tostring(s or ""):gsub("^%s+", ""):gsub("%s+$", ""))
+    end
+
+    local function launchPS()
+        if not PSMON_ENABLED then return end
+        genv.PSMON_RUNNING = false
+        local okPS, errPS = pcall(startPSMon)
+        if not okPS then warn("[PSMON] gagal start: " .. tostring(errPS)) end
+    end
+
+    local function mk(class, props, par)
+        local o = Instance.new(class)
+        for k, v in pairs(props) do o[k] = v end
+        o.Parent = par
+        return o
+    end
+
+    local function buildForm()
+        local saved = {}
+        pcall(function()
+            if isfile and readfile and isfile(SETUP_FILE) then
+                saved = HttpService:JSONDecode(readfile(SETUP_FILE)) or {}
+            end
+        end)
+
+        local host
+        pcall(function() host = (gethui and gethui()) or game:GetService("CoreGui") end)
+        if not host then host = LocalPlayer:WaitForChild("PlayerGui") end
+        local oldForm = host:FindFirstChild("FishItSetup")
+        if oldForm then oldForm:Destroy() end
+
+        local sg = mk("ScreenGui", { Name = "FishItSetup", ResetOnSpawn = false }, host)
+        local box = mk("Frame", {
+            Size = UDim2.new(0, 320, 0, 252),
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.45, 0),
+            BackgroundColor3 = Color3.fromRGB(20, 20, 28),
+            BackgroundTransparency = 0.05,
+            BorderSizePixel = 0,
+            Active = true,
+            Draggable = true,
+        }, sg)
+        mk("UICorner", { CornerRadius = UDim.new(0, 10) }, box)
+
+        mk("TextLabel", {
+            Size = UDim2.new(1, -50, 0, 26), Position = UDim2.new(0, 12, 0, 6),
+            BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 14,
+            TextColor3 = Color3.new(1, 1, 1), TextXAlignment = Enum.TextXAlignment.Left,
+            Text = "Fish It Monitor - Setup",
+        }, box)
+
+        local closeF = mk("TextButton", {
+            Size = UDim2.new(0, 24, 0, 24), Position = UDim2.new(1, -32, 0, 7),
+            BackgroundColor3 = Color3.fromRGB(180, 50, 50), Text = "X",
+            TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 12,
+        }, box)
+        mk("UICorner", { CornerRadius = UDim.new(0, 6) }, closeF)
+        closeF.MouseButton1Click:Connect(function() sg:Destroy() end)
+
+        -- side: nil = full lebar, 0 = kiri, 1 = kanan
+        local function field(label, y, placeholder, text, side)
+            local pos, size
+            if side == nil then
+                pos, size = UDim2.new(0, 12, 0, y), UDim2.new(1, -24, 0, 26)
+            elseif side == 0 then
+                pos, size = UDim2.new(0, 12, 0, y), UDim2.new(0.5, -18, 0, 26)
+            else
+                pos, size = UDim2.new(0.5, 6, 0, y), UDim2.new(0.5, -18, 0, 26)
+            end
+            mk("TextLabel", {
+                Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 16),
+                Position = pos, BackgroundTransparency = 1, Font = Enum.Font.Gotham,
+                TextSize = 11, TextColor3 = Color3.fromRGB(170, 175, 190),
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextTruncate = Enum.TextTruncate.AtEnd, Text = label,
+            }, box)
+            local tb = mk("TextBox", {
+                Size = size, Position = UDim2.new(pos.X.Scale, pos.X.Offset, 0, y + 17),
+                BackgroundColor3 = Color3.fromRGB(35, 35, 48), TextColor3 = Color3.new(1, 1, 1),
+                PlaceholderText = placeholder, PlaceholderColor3 = Color3.fromRGB(120, 120, 135),
+                Font = Enum.Font.Gotham, TextSize = 12, ClearTextOnFocus = false,
+                TextXAlignment = Enum.TextXAlignment.Left, Text = text or "",
+            }, box)
+            mk("UICorner", { CornerRadius = UDim.new(0, 6) }, tb)
+            return tb
+        end
+
+        local whBox   = field("Webhook Discord (wajib)", 34, "https://discord.com/api/webhooks/...", saved.webhook or pcfg.webhook)
+        local nameBox = field("Nama sesi", 84, "sesi7", saved.name or pcfg.name)
+        local multBox = field("Boost x (opsional)", 134, "8", nil, 0)
+        local durBox  = field("Sisa boost (opsional)", 134, "1d 6h 34m", nil, 1)
+
+        local status = mk("TextLabel", {
+            Size = UDim2.new(1, -24, 0, 22), Position = UDim2.new(0, 12, 0, 180),
+            BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 11, TextWrapped = true,
+            TextColor3 = Color3.fromRGB(170, 175, 190), TextXAlignment = Enum.TextXAlignment.Left,
+            TextYAlignment = Enum.TextYAlignment.Top, Text = "Isi webhook lalu tekan Start",
+        }, box)
+
+        local startBtn = mk("TextButton", {
+            Size = UDim2.new(1, -24, 0, 32), Position = UDim2.new(0, 12, 0, 208),
+            BackgroundColor3 = Color3.fromRGB(50, 140, 80), Text = "Start",
+            TextColor3 = Color3.new(1, 1, 1), Font = Enum.Font.GothamBold, TextSize = 14,
+        }, box)
+        mk("UICorner", { CornerRadius = UDim.new(0, 6) }, startBtn)
+
+        local busy = false
+        startBtn.MouseButton1Click:Connect(function()
+            if busy then return end
+            local wh = trim(whBox.Text)
+            if not validWebhook(wh) then
+                status.Text = "Webhook ga valid (harus https://.../api/webhooks/...)"
+                status.TextColor3 = Color3.fromRGB(255, 110, 110)
+                return
+            end
+            busy = true
+
+            local nm = trim(nameBox.Text)
+            pcfg.webhook = wh
+            pcfg.name = (nm ~= "") and nm or "SESI"
+            local mult, dur = tonumber(multBox.Text), trim(durBox.Text)
+            if mult and dur ~= "" then pcfg.boost = { mult = mult, dur = dur } else pcfg.boost = nil end
+            if not validWebhook(WEBHOOK_URL) then WEBHOOK_URL = wh end
+
+            pcall(function()
+                if writefile then
+                    writefile(SETUP_FILE, HttpService:JSONEncode({ webhook = wh, name = nm }))
+                end
+            end)
+
+            launchPS()
+            if onSetupStart then task.spawn(onSetupStart) end
+
+            status.Text = "Berjalan, cek channel Discord kamu"
+            status.TextColor3 = Color3.fromRGB(120, 230, 150)
+            startBtn.Text = "OK"
+            task.delay(1.5, function() pcall(function() sg:Destroy() end) end)
+        end)
+    end
+
+    if (validWebhook(pcfg.webhook) or validWebhook(WEBHOOK_URL)) and not cfg.SHOW_FORM then
+        launchPS()
+    else
+        buildForm()
+    end
 end
 
 if not SCANNER_ENABLED then return end
@@ -733,6 +901,11 @@ local parent
 pcall(function() parent = (gethui and gethui()) or game:GetService("CoreGui") end)
 if not parent then parent = LocalPlayer:WaitForChild("PlayerGui") end
 
+do
+    local g = (getgenv and getgenv()) or _G
+    if g.FishItScannerStop then pcall(g.FishItScannerStop) end
+end
+
 local old = parent:FindFirstChild("FishItScanner")
 if old then old:Destroy() end
 
@@ -1025,6 +1198,13 @@ close.MouseButton1Click:Connect(function()
     running = false
     gui:Destroy()
 end)
+do
+    local g = (getgenv and getgenv()) or _G
+    g.FishItScannerStop = function()
+        running = false
+        pcall(function() gui:Destroy() end)
+    end
+end
 
 local function render()
     for _, c in ipairs(list:GetChildren()) do
@@ -1388,3 +1568,13 @@ Players.PlayerRemoving:Connect(function(plr)
     lastFishing[plr] = nil
     idleSince[plr] = nil
 end)
+
+-- dipanggil form setelah tombol Start: kirim laporan pertama Scanner
+onSetupStart = function()
+    local waited = 0
+    while not templates and waited < 60 and running do
+        task.wait(1)
+        waited = waited + 1
+    end
+    if running then sendWebhook() end
+end
