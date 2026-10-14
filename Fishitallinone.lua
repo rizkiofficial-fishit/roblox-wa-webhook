@@ -14,7 +14,7 @@
         webhook  = "https://discord.com/api/webhooks/xxx/yyy",  -- dipakai PS Monitor (& Scanner kalau WEBHOOK_URL kosong)
         name     = "sesi7",
         -- boost    = { mult = 8, dur = "1d 6h 34m" },
-        -- reporter = "UsernameAkun",   -- kalau banyak akun 1 sesi
+        -- reporter = "UsernameAkun",   -- kalau banyak akun: HANYA akun ini yang jalanin Scanner & PS Monitor
         -- interval = 15,               -- detik, minimal 10
     }
     getgenv().FishItConfig = {          -- OPSIONAL (setting Scanner)
@@ -22,6 +22,8 @@
         -- PSMON_ENABLED = false,       -- matiin PS Monitor, Scanner aja
         -- SCANNER_ENABLED = false,     -- matiin Scanner, PS Monitor aja
         -- START_MINIMIZED = true,
+        -- ROD_DETECT = false,          -- matiin deteksi rod (PALING RINGAN, disarankan buat HP)
+        -- ALL_TEMPLATES = true,        -- scan semua model game buat deteksi rod (berat)
     }
     loadstring(game:HttpGet("https://raw.githubusercontent.com/USERNAME/REPO/main/fishit_all.lua"))()
 
@@ -41,7 +43,7 @@ local IS_MOBILE = UserInputService.TouchEnabled and not UserInputService.Keyboar
 ------------------------------------------------------------
 -- KONFIGURASI
 ------------------------------------------------------------
-local UPDATE_INTERVAL = 2
+local UPDATE_INTERVAL = 3
 
 local WEBHOOK_URL    = "ISI_URL_DISCORD_WEBHOOK_DI_SINI"
 local NOTIFY_INTERVAL = 30 * 60
@@ -126,6 +128,11 @@ if cfg.SPOT_RADIUS then SPOT_RADIUS = cfg.SPOT_RADIUS end
 if cfg.SPOT_MIN then SPOT_MIN = cfg.SPOT_MIN end
 if cfg.SPOT_COOLDOWN then SPOT_COOLDOWN = cfg.SPOT_COOLDOWN end
 if cfg.SHOW_PET ~= nil then SHOW_PET = cfg.SHOW_PET end
+
+-- Mode ringan (penting kalau dijalankan di HP / banyak akun)
+local ROD_DETECT    = cfg.ROD_DETECT ~= false       -- false = ga scan model rod sama sekali
+local ALL_TEMPLATES = cfg.ALL_TEMPLATES == true     -- false = cuma model yang path-nya mengandung "rod"
+local ROD_TTL       = tonumber(cfg.ROD_TTL) or 20   -- hasil deteksi rod di-cache segini detik
 
 -- HTTP request (dipakai Scanner & PS Monitor)
 local httpRequest = (syn and syn.request)
@@ -533,6 +540,11 @@ do
     end
 end
 
+-- banyak akun: Scanner (GUI + scan berat) cuma jalan di akun reporter
+if type(pcfg.reporter) == "string" and pcfg.reporter ~= "" and LocalPlayer.Name ~= pcfg.reporter then
+    return
+end
+
 if not SCANNER_ENABLED then return end
 
 ------------------------------------------------------------
@@ -610,7 +622,7 @@ local function buildTemplates()
     for _, root in ipairs(roots) do
         for _, d in ipairs(root:GetDescendants()) do
             scanned = scanned + 1
-            if scanned % 1500 == 0 then task.wait() end
+            if scanned % 400 == 0 then task.wait() end
             if d:IsA("MeshPart") and d.MeshId ~= "" then
                 local r = templateRoot(d, root)
                 if r then
@@ -633,7 +645,9 @@ local function buildTemplates()
     for _, r in ipairs(order) do
         local g = groups[r]
         local nm = r.Name
-        if #nm > 2 and not tonumber(nm) then
+        local fullName = r:GetFullName()
+        local isRodLike = ALL_TEMPLATES or (string.find(string.lower(fullName), "rod") ~= nil)
+        if isRodLike and #nm > 2 and not tonumber(nm) then
         out[#out + 1] = {
             name = r.Name,
             path = r:GetFullName(),
@@ -649,7 +663,14 @@ local function buildTemplates()
     templates = out
 end
 
-task.spawn(function() pcall(buildTemplates) end)
+if ROD_DETECT then
+    task.spawn(function()
+        task.wait(8) -- jangan bebani client pas game baru load
+        pcall(buildTemplates)
+    end)
+else
+    templates = {}
+end
 
 -- load rod yang pernah diajarin
 pcall(function()
@@ -758,7 +779,7 @@ local function rodFromEquippedModel(char)
     return "tidak dikenal"
 end
 
-local function getRod(player)
+local function getRodUncached(player)
     local char = player.Character
 
     local skin = player:GetAttribute("FishingRodSkin")
@@ -819,6 +840,33 @@ local function getRod(player)
     return "-"
 end
 
+-- hasil deteksi rod di-cache per player (deteksi mesh itu mahal)
+local rodByPlayer = setmetatable({}, { __mode = "k" })
+
+local function getRod(player)
+    local skin = player:GetAttribute("FishingRodSkin")
+
+    if not ROD_DETECT then
+        if type(skin) == "string" and skin ~= "" then return skin .. " (skin)" end
+        return "-"
+    end
+
+    local char = player.Character
+    local model = char and char:FindFirstChild("!!!EQUIPPED_TOOL!!!")
+    local now = os.clock()
+
+    local c = rodByPlayer[player]
+    if c and c.model == model and c.skin == skin and (now - c.t) < ROD_TTL then
+        return c.val
+    end
+
+    local val = getRodUncached(player)
+    if val ~= "memuat..." then
+        rodByPlayer[player] = { model = model, skin = skin, val = val, t = now }
+    end
+    return val
+end
+
 local FISHING_HOLD = 45
 local lastFishing = {}
 local idleSince = {}
@@ -847,7 +895,7 @@ local function statusMark(r)
     return "⚪"
 end
 
-local function scan()
+local function scanRaw()
     local rows = {}
     local now = os.clock()
     for _, plr in ipairs(Players:GetPlayers()) do
@@ -892,6 +940,16 @@ local function scan()
     end
     table.sort(rows, function(a, b) return a.island < b.island end)
     return rows
+end
+
+local scanCache, scanAt = nil, 0
+
+local function scan(force)
+    local now = os.clock()
+    if not force and scanCache and (now - scanAt) < 1.5 then return scanCache end
+    scanCache = scanRaw()
+    scanAt = os.clock()
+    return scanCache
 end
 
 ------------------------------------------------------------
@@ -1207,6 +1265,11 @@ do
 end
 
 local function render()
+    if minimized then
+        title.Text = "Scanner · " .. #Players:GetPlayers() .. " player"
+        return
+    end
+
     for _, c in ipairs(list:GetChildren()) do
         if c:IsA("TextLabel") then c:Destroy() end
     end
